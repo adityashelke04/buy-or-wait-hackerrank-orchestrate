@@ -15,13 +15,14 @@ from .ranker import rank
 from .solver import earliest_full_payment_date, enumerate_candidates, safe_amount
 from .types import Dataset, Decision, Request
 
-DEFAULT_ESTIMATOR = "p75"
+DEFAULT_ESTIMATOR = "p75"          # chosen by evaluation/calibrate.py, not by taste
 
 
 def decide(ds: Dataset, request: Request, rates: RateTable,
            extractor=None, estimator: str = DEFAULT_ESTIMATOR,
            horizon_days: int = forecast.HORIZON_DAYS,
-           min_observations: int = recurrence.MIN_OBSERVATIONS) -> Decision:
+           min_observations: int = recurrence.MIN_OBSERVATIONS,
+           project_income: bool = True) -> Decision:
     profile = ds.profiles[request.user_id]
     events = list(ds.events_by_user.get(request.user_id, []))
 
@@ -31,7 +32,8 @@ def decide(ds: Dataset, request: Request, rates: RateTable,
     view = LedgerView(events, profile, rates)
     series = recurrence.detect(events, profile, rates, request.request_date,
                                estimator=estimator,
-                               min_observations=min_observations)
+                               min_observations=min_observations,
+                               project_income=project_income)
     curve = forecast.build(view, series, request.request_date, horizon_days)
 
     minimum = profile.minimum_balance_to_keep
@@ -75,6 +77,7 @@ def run(dataset_dir: Path, out_path: Path, extractor=None,
         requests_file: str = "requests.csv",
         horizon_days: int = forecast.HORIZON_DAYS,
         min_observations: int = recurrence.MIN_OBSERVATIONS,
+        project_income: bool = True,
         validate_output: bool = True) -> list[Decision]:
     dataset_dir = Path(dataset_dir)
     ds = load_dataset(dataset_dir)
@@ -87,7 +90,8 @@ def run(dataset_dir: Path, out_path: Path, extractor=None,
         validate_output = False        # the gate is defined over the eval set
 
     decisions = [
-        decide(ds, r, rates, extractor, estimator, horizon_days, min_observations)
+        decide(ds, r, rates, extractor, estimator, horizon_days,
+               min_observations, project_income)
         for r in requests
     ]
 

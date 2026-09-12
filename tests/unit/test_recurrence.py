@@ -149,3 +149,67 @@ def test_detect_is_deterministic_and_order_independent():
     a = detect(events, prof(), EMPTY_RATES, as_of=date(2024, 3, 5))
     b = detect(list(reversed(events)), prof(), EMPTY_RATES, as_of=date(2024, 3, 5))
     assert a == b
+
+
+def test_rotating_descriptions_still_form_one_category_level_series():
+    """The dataset rotates the description for everyday spending: groceries turn
+    up as 'Supermarket basket', 'Grocery delivery', 'Bulk pantry shop' and so on.
+    Grouped by description each variant looks irregular and none is detected,
+    yet the category is plainly weekly. Essential variable spending must be
+    picked up at the category level.
+    """
+    names = ["Supermarket basket", "Grocery delivery", "Bulk pantry shop",
+             "Fresh food shop", "Weekly produce market", "Neighbourhood grocer"]
+    days = [date(2024, 1, 2), date(2024, 1, 9), date(2024, 1, 16),
+            date(2024, 1, 23), date(2024, 1, 30), date(2024, 2, 6)]
+    events = [ev(f"event_{i}", d, "60", category="groceries", description=n)
+              for i, (d, n) in enumerate(zip(days, names))]
+
+    series = detect(events, prof(), EMPTY_RATES, as_of=date(2024, 2, 10))
+    assert len(series) == 1, "expected one weekly groceries series"
+    assert series[0].category == "groceries"
+    assert series[0].cadence == "weekly"
+
+
+def test_distinct_fixed_commitments_in_one_category_stay_separate():
+    """The opposite case must keep working: two different subscriptions share a
+    category but recur on different days and must not be merged."""
+    music = [ev(f"event_m{i}", date(2024, m, 10), "14", category="subscription",
+                description="Music subscription") for i, m in enumerate((1, 2, 3))]
+    backup = [ev(f"event_b{i}", date(2024, m, 22), "11", category="subscription",
+                 description="Online backup") for i, m in enumerate((1, 2, 3))]
+
+    series = detect(music + backup, prof(), EMPTY_RATES, as_of=date(2024, 3, 25))
+    assert len(series) == 2
+    assert {s.anchor for s in series} == {10, 22}
+
+
+def test_category_fallback_does_not_double_count_a_detected_commitment():
+    """Rent already forms a description-level series, so the category must not
+    also contribute a second one."""
+    days = [date(2024, 1, 1), date(2024, 2, 1), date(2024, 3, 1)]
+    events = [ev(f"event_{i}", d, "467.50") for i, d in enumerate(days)]
+    series = detect(events, prof(), EMPTY_RATES, as_of=date(2024, 3, 5))
+    assert len(series) == 1
+
+
+def test_income_projection_can_be_disabled():
+    """The problem statement says to count CONFIRMED salary and not to invent
+    unsupported future income. Whether a recurring salary may be projected
+    beyond its confirmed row is therefore a calibration question, so it is an
+    explicit switch rather than a baked-in assumption."""
+    days = [date(2024, 1, 15), date(2024, 2, 15), date(2024, 3, 15)]
+    salary = [ev(f"event_{i}", d, "900", category="salary",
+                 description="Payroll credit", direction="credit")
+              for i, d in enumerate(days)]
+    rent = [ev(f"event_r{i}", d, "500", category="rent") for i, d in
+            enumerate([date(2024, 1, 1), date(2024, 2, 1), date(2024, 3, 1)])]
+
+    with_income = detect(salary + rent, prof(), EMPTY_RATES, date(2024, 3, 20),
+                         project_income=True)
+    assert {s.category for s in with_income} == {"salary", "rent"}
+
+    without = detect(salary + rent, prof(), EMPTY_RATES, date(2024, 3, 20),
+                     project_income=False)
+    assert {s.category for s in without} == {"rent"}
+    assert all(s.direction == "debit" for s in without)

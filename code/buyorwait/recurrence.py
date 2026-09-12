@@ -127,20 +127,57 @@ def detect(events: list[Event], profile: Profile, rates: RateTable,
            as_of: date, estimator: str = "p75",
            min_observations: int = MIN_OBSERVATIONS,
            lookback_days: int = LOOKBACK_DAYS,
-           allow_any_cadence: bool = False) -> list[Series]:
-    estimate = ESTIMATORS[estimator]
+           allow_any_cadence: bool = False,
+           project_income: bool = True) -> list[Series]:
+    """Two passes over the same history.
+
+    Pass 1 groups by (category, description). That keeps distinct fixed
+    commitments apart - a music subscription and a delivery membership share a
+    category but fall on different days of the month.
+
+    Pass 2 re-groups by category alone, but ONLY for categories that produced
+    nothing in pass 1. The dataset rotates the description of everyday spending
+    ('Supermarket basket', 'Grocery delivery', 'Bulk pantry shop'), so each
+    variant looks irregular on its own while the category is plainly weekly.
+    Restricting pass 2 to untouched categories is what stops rent being counted
+    twice.
+    """
     horizon_start = as_of - timedelta(days=lookback_days)
+    usable = [
+        e for e in resolve_links(events)
+        if classify(e) is CashEffect.COUNT
+        and horizon_start <= e.settlement_date <= as_of
+    ]
 
-    groups: dict[tuple[str, str], list[Event]] = defaultdict(list)
-    for e in resolve_links(events):
-        if classify(e) is not CashEffect.COUNT:
-            continue
-        if e.settlement_date > as_of or e.settlement_date < horizon_start:
-            continue
-        groups[_family(e)].append(e)
+    by_description: dict[tuple[str, str], list[Event]] = defaultdict(list)
+    for e in usable:
+        by_description[_family(e)].append(e)
 
+    series = _series_from(by_description, profile, rates, estimator,
+                          min_observations, allow_any_cadence)
+
+    covered = {s.category for s in series}
+    by_category: dict[tuple[str, str], list[Event]] = defaultdict(list)
+    for e in usable:
+        if e.category not in covered:
+            by_category[(e.category, "")].append(e)
+
+    series.extend(_series_from(by_category, profile, rates, estimator,
+                               min_observations, allow_any_cadence))
+    if not project_income:
+        # Only confirmed income rows already in the ledger will count; a
+        # recurring salary is not extrapolated past them.
+        series = [s for s in series if s.direction != "credit"]
+    series.sort(key=lambda s: (s.category, s.template_event_id))
+    return series
+
+
+def _series_from(groups: dict[tuple[str, str], list[Event]], profile: Profile,
+                 rates: RateTable, estimator: str, min_observations: int,
+                 allow_any_cadence: bool) -> list[Series]:
+    estimate = ESTIMATORS[estimator]
     series: list[Series] = []
-    for (category, description), members in sorted(groups.items()):
+    for (category, _label), members in sorted(groups.items()):
         members.sort(key=lambda e: (e.settlement_date, e.event_id))
         if len(members) < min_observations:
             continue
