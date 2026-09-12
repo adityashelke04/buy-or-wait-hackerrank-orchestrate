@@ -1,0 +1,12 @@
+{
+  "overall": 0.605,
+  "per_field": {
+    "amount_safe_to_pay": 0.12,
+    "affordability_status": 0.72,
+    "recommended_payment_method": 0.8,
+    "payment_plan": 0.68,
+    "earliest_date_for_full_payment": 0.44,
+    "spending_changes_needed": 0.88,
+    "decision_explanation": 0.6
+  }
+}

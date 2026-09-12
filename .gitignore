@@ -30,3 +30,6 @@ build/
 # --- os ---
 .DS_Store
 Thumbs.db
+
+# scoring scratch output
+output_samples.csv

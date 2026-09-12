@@ -13,11 +13,11 @@ kept alongside it and a 200-case property test asserts the two never disagree.
 from __future__ import annotations
 
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 
 from .changes import Change, apply as apply_changes, combinations
 from .forecast import Curve
-from .money import fmt_plain
+from .money import CENTS, fmt_plain
 from .ranker import NO_OPTION, Candidate
 from .simulate import is_safe, trough
 from .types import PaymentOption, Profile, Request
@@ -25,11 +25,17 @@ from .types import PaymentOption, Profile, Request
 
 def safe_amount(curve: Curve, minimum: Decimal, requested: Decimal,
                 on: date) -> Decimal:
-    """Largest amount payable on `on` that keeps the whole window safe."""
+    """Largest amount payable on `on` that keeps the whole window safe.
+
+    Quantized to whole cents, rounding DOWN. The rounding direction matters
+    twice over: paying a fraction less is always safe while paying more may not
+    be, and an exact two-decimal figure is what lets a two-step partial payment
+    sum back to the requested amount instead of drifting by a cent.
+    """
     headroom = trough(curve) - minimum
     if headroom <= 0:
         return Decimal("0")
-    return min(headroom, requested)
+    return min(headroom, requested).quantize(CENTS, rounding=ROUND_DOWN)
 
 
 def safe_amount_by_search(curve: Curve, minimum: Decimal, requested: Decimal,

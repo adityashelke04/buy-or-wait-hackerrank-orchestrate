@@ -116,3 +116,28 @@ def test_earliest_date_requires_safety_for_the_whole_remaining_window():
     c = curve("1000", [(date(2024, 3, 20), Decimal("-400"))])
     got = earliest_full_payment_date(c, Decimal("200"), Decimal("500"))
     assert got is None or is_safe(c, Decimal("200"), [(got, Decimal("500"))])
+
+
+def test_safe_amount_is_quantized_to_two_decimals_rounding_down():
+    """The rendered amount must be exact, or a two-step partial payment will not
+    sum back to the requested amount. Rounding DOWN keeps it conservative:
+    paying a fraction less is always safe, paying more may not be.
+    """
+    c = curve("1000.567")
+    got = safe_amount(c, Decimal("0"), Decimal("99999"), START)
+    assert got == Decimal("1000.56")
+
+
+def test_quantized_safe_amount_still_passes_the_safety_check():
+    c = curve("1000.567", [(date(2024, 4, 1), Decimal("-0.001"))])
+    got = safe_amount(c, Decimal("0"), Decimal("99999"), START)
+    assert is_safe(c, Decimal("0"), [(START, got)])
+
+
+def test_partial_split_sums_exactly_to_the_requested_amount():
+    """The invariant the contract gate enforces, checked at its source."""
+    requested = Decimal("12345.67")
+    c = curve("6172.835")
+    safe = safe_amount(c, Decimal("0"), requested, START)
+    assert safe + (requested - safe) == requested
+    assert safe == safe.quantize(Decimal("0.01"))
