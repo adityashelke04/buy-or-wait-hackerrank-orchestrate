@@ -15,8 +15,12 @@ from __future__ import annotations
 from datetime import date, timedelta
 from decimal import Decimal
 
+from .changes import Change, apply as apply_changes, combinations
 from .forecast import Curve
+from .money import fmt_plain
+from .ranker import NO_OPTION, Candidate
 from .simulate import is_safe, trough
+from .types import PaymentOption, Profile, Request
 
 
 def safe_amount(curve: Curve, minimum: Decimal, requested: Decimal,
@@ -63,3 +67,108 @@ def earliest_full_payment_date(curve: Curve, minimum: Decimal,
             return day
         day += timedelta(days=1)
     return None
+
+
+# --------------------------------------------------------------------------
+# Candidate enumeration
+# --------------------------------------------------------------------------
+
+def option_payments(option: PaymentOption) -> list[tuple[date, Decimal]]:
+    freq = option.payment_frequency_days or 0
+    return [
+        (option.first_payment_date + timedelta(days=freq * i), option.payment_amount)
+        for i in range(option.number_of_payments)
+    ]
+
+
+def option_months(option: PaymentOption) -> int:
+    """How many months the schedule spans, for the max_installment_months check."""
+    freq = option.payment_frequency_days or 30
+    span_days = freq * max(option.number_of_payments - 1, 0) + freq
+    return max(1, round(span_days / 30))
+
+
+def enumerate_candidates(request: Request, profile: Profile, curve: Curve,
+                         options: list[PaymentOption], change_options: list[Change],
+                         safe: Decimal, earliest: date | None) -> list[Candidate]:
+    """Every eligible, SAFE way to pay. Ineligible or unsafe plans never appear,
+    so the ranker only ever orders things the user could actually do."""
+    accepted = set(profile.payment_methods_user_will_consider)
+    minimum = profile.minimum_balance_to_keep
+    deadline = request.desired_completion_date
+    out: list[Candidate] = []
+
+    def add(method, payments, texts, total, changes, option_id, sort_key, status):
+        working = apply_changes(curve, list(changes), request.request_date, curve.end)
+        if not is_safe(working, minimum, list(payments)):
+            return
+        out.append(Candidate(
+            method=method, payments=tuple(payments), payment_texts=tuple(texts),
+            total_paid=total, changes=tuple(changes), option_id=option_id,
+            option_sort_key=sort_key,
+            completes_by_deadline=bool(payments) and payments[-1][0] <= deadline,
+            status=status,
+        ))
+
+    change_sets: list[tuple[Change, ...]] = [()]
+    change_sets.extend(combinations(change_options))
+
+    for changes in change_sets:
+        plan_status = "affordable_with_plan" if changes else "affordable_now"
+
+        # 1. Full payment on the request date.
+        if "full_payment" in accepted:
+            add("full_payment",
+                [(request.request_date, request.requested_amount)],
+                [fmt_plain(request.requested_amount)],
+                request.requested_amount, changes, None, NO_OPTION, plan_status)
+
+        # 2. Each supplied payment option.
+        for option in options:
+            if option.payment_method == "full_payment":
+                if "full_payment" not in accepted:
+                    continue
+                status = ("affordable_now"
+                          if not changes and option.first_payment_date == request.request_date
+                          else "affordable_with_plan")
+            elif option.payment_method == "installments":
+                if "installments" not in accepted:
+                    continue
+                # A blank max_installment_months means installments are not
+                # considered at all - 119 users in the dataset are in this state.
+                if profile.max_installment_months is None:
+                    continue
+                if option_months(option) > profile.max_installment_months:
+                    continue
+                status = "affordable_with_plan"
+            else:
+                continue
+
+            payments = option_payments(option)
+            add(option.payment_method, payments,
+                [option.payment_amount_text] * len(payments),
+                option.total_payable_amount, changes,
+                option.payment_option_id, option.sort_key, status)
+
+        # 3. Two-step partial payment. Spending changes do not apply: the
+        #    labeled samples pair partial payment with no changes.
+        if (not changes and "partial_payment" in accepted
+                and request.allows_partial_payment
+                and earliest is not None and earliest <= deadline
+                and Decimal("0") < safe < request.requested_amount):
+            remainder = request.requested_amount - safe
+            add("partial_payment",
+                [(request.request_date, safe), (earliest, remainder)],
+                [fmt_plain(safe), fmt_plain(remainder)],
+                request.requested_amount, changes, None, NO_OPTION,
+                "affordable_with_plan")
+
+        # 4. Wait for the first date the full amount is safe.
+        if (not changes and "full_payment" in accepted
+                and earliest is not None and earliest > request.request_date):
+            add("wait", [(earliest, request.requested_amount)],
+                [fmt_plain(request.requested_amount)],
+                request.requested_amount, changes, None, NO_OPTION,
+                "affordable_later")
+
+    return out
