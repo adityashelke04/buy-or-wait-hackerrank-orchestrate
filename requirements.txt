@@ -1,0 +1,6 @@
+pytest>=8.0
+# Optional backends. The core pipeline runs without these.
+openai>=1.0        # used only for LLM_BACKEND=cloud (Google AI Studio / Groq / OpenRouter)
+rapidocr>=3.9.2    # OCR cross-check for the 16 image-backed amounts (Apache-2.0, CPU)
+onnxruntime>=1.18
+Pillow>=10.0
