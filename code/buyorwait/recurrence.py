@@ -1,0 +1,180 @@
+"""Detect recurring income and expenses from history, then project them forward.
+
+Two rules from the problem statement drive this module:
+
+  "Detect recurrence only when history supports it."
+      -> at least MIN_OBSERVATIONS sightings, and a regular cadence
+
+  "Forecast essential variable spending conservatively."
+      -> a swappable estimator, chosen by calibration against the labeled
+         samples rather than by guesswork
+"""
+from __future__ import annotations
+
+import calendar
+import statistics
+from collections import Counter, defaultdict
+from dataclasses import dataclass
+from datetime import date, timedelta
+from decimal import Decimal
+from typing import Callable
+
+from .fx import RateTable
+from .ledger import CashEffect, classify, resolve_links
+from .types import Event, Profile
+
+MIN_OBSERVATIONS = 3
+LOOKBACK_DAYS = 180          # how much history can form a series
+RECENT_WINDOW = 6            # how many recent occurrences the estimator sees
+
+WEEKLY_GAP = (5, 9)
+MONTHLY_GAP = (26, 35)
+
+
+def _p75(values: list[Decimal]) -> Decimal:
+    s = sorted(values)
+    if len(s) == 1:
+        return s[0]
+    idx = (len(s) - 1) * Decimal("0.75")
+    lo = int(idx)
+    hi = min(lo + 1, len(s) - 1)
+    return s[lo] + (s[hi] - s[lo]) * (idx - lo)
+
+
+ESTIMATORS: dict[str, Callable[[list[Decimal]], Decimal]] = {
+    "last": lambda v: v[-1],
+    "mean": lambda v: sum(v) / len(v),
+    "median": lambda v: Decimal(str(statistics.median(sorted(v)))),
+    "p75": _p75,
+    "max": lambda v: max(v),
+    "max3": lambda v: max(v[-3:]),
+}
+
+
+CADENCE_AGREEMENT = 0.6      # share of gaps that must sit inside the band
+
+
+def _fits(gaps: list[int], band: tuple[int, int]) -> bool:
+    """A cadence is real only when the gaps are CONSISTENT, not merely when
+    their median lands in the band.
+
+    Gaps of 17 and 51 days have a median of 34, which would otherwise be read as
+    monthly even though neither gap is anywhere near a month.
+    """
+    if not gaps:
+        return False
+    inside = sum(1 for g in gaps if band[0] <= g <= band[1])
+    return inside / len(gaps) >= CADENCE_AGREEMENT
+
+
+def clamp_day(year: int, month: int, day: int) -> date:
+    """Day 31 in a 30-day month lands on the last day of that month."""
+    return date(year, month, min(day, calendar.monthrange(year, month)[1]))
+
+
+@dataclass(frozen=True)
+class Series:
+    category: str
+    description: str
+    template_event_id: str
+    cadence: str                     # "monthly" | "weekly"
+    anchor: int                      # day-of-month, or weekday 0=Mon
+    amount: Decimal                  # home currency, positive magnitude
+    direction: str                   # debit | credit
+    flexibility: str
+    minimum_allowed_amount: Decimal | None
+    last_seen: date
+
+    @property
+    def signed_amount(self) -> Decimal:
+        return self.amount if self.direction == "credit" else -self.amount
+
+    @property
+    def is_flexible(self) -> bool:
+        return self.flexibility != "fixed"
+
+    def occurrences(self, after: date, until: date) -> list[date]:
+        """Projected dates strictly after `after` and on or before `until`."""
+        out: list[date] = []
+        if self.cadence == "weekly":
+            d = after + timedelta(days=1)
+            while d.weekday() != self.anchor:
+                d += timedelta(days=1)
+            while d <= until:
+                out.append(d)
+                d += timedelta(days=7)
+            return out
+
+        year, month = after.year, after.month
+        for _ in range(14):
+            d = clamp_day(year, month, self.anchor)
+            if after < d <= until:
+                out.append(d)
+            month += 1
+            if month == 13:
+                year, month = year + 1, 1
+        return sorted(out)
+
+
+def _family(event: Event) -> tuple[str, str]:
+    """Group key. Description is part of it because one category can hold
+    several distinct commitments - a music subscription and a delivery
+    membership are both 'subscription' but recur on different days."""
+    return (event.category, event.description.strip().lower())
+
+
+def detect(events: list[Event], profile: Profile, rates: RateTable,
+           as_of: date, estimator: str = "p75",
+           min_observations: int = MIN_OBSERVATIONS,
+           lookback_days: int = LOOKBACK_DAYS,
+           allow_any_cadence: bool = False) -> list[Series]:
+    estimate = ESTIMATORS[estimator]
+    horizon_start = as_of - timedelta(days=lookback_days)
+
+    groups: dict[tuple[str, str], list[Event]] = defaultdict(list)
+    for e in resolve_links(events):
+        if classify(e) is not CashEffect.COUNT:
+            continue
+        if e.settlement_date > as_of or e.settlement_date < horizon_start:
+            continue
+        groups[_family(e)].append(e)
+
+    series: list[Series] = []
+    for (category, description), members in sorted(groups.items()):
+        members.sort(key=lambda e: (e.settlement_date, e.event_id))
+        if len(members) < min_observations:
+            continue
+
+        gaps = [(b.settlement_date - a.settlement_date).days
+                for a, b in zip(members, members[1:])]
+
+        if _fits(gaps, WEEKLY_GAP):
+            cadence = "weekly"
+            anchor = Counter(e.settlement_date.weekday()
+                             for e in members).most_common(1)[0][0]
+        elif _fits(gaps, MONTHLY_GAP) or allow_any_cadence:
+            cadence = "monthly"
+            anchor = Counter(e.settlement_date.day for e in members).most_common(1)[0][0]
+        else:
+            continue                    # irregular: not a dependable commitment
+
+        recent = members[-RECENT_WINDOW:]
+        home_amounts = [
+            rates.convert(e.amount, e.currency, profile.home_currency,
+                          e.settlement_date)
+            for e in recent
+        ]
+        latest = members[-1]
+        series.append(Series(
+            category=category,
+            description=latest.description,
+            template_event_id=latest.event_id,
+            cadence=cadence,
+            anchor=anchor,
+            amount=estimate(home_amounts),
+            direction=latest.direction,
+            flexibility=latest.flexibility,
+            minimum_allowed_amount=latest.minimum_allowed_amount,
+            last_seen=latest.settlement_date,
+        ))
+    return series
