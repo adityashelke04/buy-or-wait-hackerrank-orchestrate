@@ -1,0 +1,32 @@
+# --- transcript (AGENTS.md §2: never commit) ---
+log.txt
+
+# --- secrets: nothing key-shaped may ever be committed ---
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+secrets.json
+credentials.json
+service-account*.json
+
+# --- python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# --- build artifacts ---
+code.zip
+dist/
+build/
+
+# --- os ---
+.DS_Store
+Thumbs.db
