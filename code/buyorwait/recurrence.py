@@ -183,12 +183,47 @@ def detect(events: list[Event], profile: Profile, rates: RateTable,
 
     series.extend(_series_from(by_category, profile, rates, estimator,
                                min_observations, allow_any_cadence))
+    if not any(s.category == "salary" and s.direction == "credit" for s in series):
+        confirmed = _confirmed_salary_series(events, profile, rates, as_of)
+        if confirmed is not None:
+            series.append(confirmed)
+
     if not project_income:
         # Only confirmed income rows already in the ledger will count; a
         # recurring salary is not extrapolated past them.
         series = [s for s in series if s.direction != "credit"]
     series.sort(key=lambda s: (s.category, s.template_event_id))
     return series
+
+
+def _confirmed_salary_series(events: list[Event], profile: Profile,
+                             rates: RateTable, as_of: date) -> Series | None:
+    """A monthly income series from the most recent confirmed salary.
+
+    Generic detection needs three sightings, but a new employee may have one
+    prorated payslip and a scheduled 'Next confirmed salary'. That salary is
+    confirmed, so it recurs monthly on its own day at its own amount - which is
+    what the labeled samples imply, where the earliest safe date keeps landing
+    on payday.
+    """
+    salaries = [
+        e for e in resolve_links(events)
+        if e.category == "salary" and e.direction == "credit"
+        and classify(e) is CashEffect.COUNT
+        and e.settlement_date <= as_of + timedelta(days=45)
+    ]
+    if not salaries:
+        return None
+    latest = max(salaries, key=lambda e: (e.settlement_date, e.event_id))
+    return Series(
+        category="salary", description=latest.description,
+        template_event_id=latest.event_id, cadence="monthly",
+        anchor=latest.settlement_date.day,
+        amount=rates.convert(latest.amount, latest.currency, profile.home_currency,
+                             latest.settlement_date),
+        direction="credit", flexibility=latest.flexibility,
+        minimum_allowed_amount=None, last_seen=latest.settlement_date,
+    )
 
 
 def _series_from(groups: dict[tuple[str, str], list[Event]], profile: Profile,

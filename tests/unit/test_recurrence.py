@@ -243,3 +243,20 @@ def test_outlier_filter_leaves_a_steady_series_untouched():
     events = [ev(f"event_{i}", d, "467.50") for i, d in enumerate(days)]
     s = detect(events, prof(), EMPTY_RATES, as_of=date(2024, 3, 5), estimator="max")
     assert s[0].amount == Decimal("467.50")
+
+
+def test_a_confirmed_next_salary_establishes_a_monthly_income_series():
+    """A new employee has one prorated payslip and a scheduled 'Next confirmed
+    salary'. Too little history for generic detection, yet the salary is
+    confirmed - so it recurs monthly on its day at its confirmed amount."""
+    first = ev("event_s1", date(2024, 2, 15), "12826", category="salary",
+               description="Prorated first salary", direction="credit")
+    confirmed = ev("event_s2", date(2024, 3, 15), "23320", category="salary",
+                   description="Next confirmed salary", direction="credit",
+                   status="scheduled")
+    s = [x for x in detect([first, confirmed], prof(), EMPTY_RATES, date(2024, 3, 3))
+         if x.category == "salary"]
+    assert len(s) == 1
+    assert s[0].cadence == "monthly" and s[0].anchor == 15
+    assert s[0].amount == Decimal("23320")
+    assert date(2024, 4, 15) in s[0].occurrences(date(2024, 3, 15), date(2024, 5, 31))
