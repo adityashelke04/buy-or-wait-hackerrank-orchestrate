@@ -74,3 +74,16 @@ def test_amount_outside_tolerance_is_a_miss(tmp_path):
     report = score(out, samples)
     assert report.per_field["amount_safe_to_pay"] == 24 / 25
     assert any(m[1] == "amount_safe_to_pay" for m in report.misses)
+
+
+def test_explanation_numbers_ignore_trailing_punctuation():
+    """'15 June 2024, then' and '15 June 2024. Paying' name the same date."""
+    from evaluation.score import _explanation_match
+    assert _explanation_match("Wait until 15 June 2024, then pay IDR 12,693,000 in full.",
+                              "Pay IDR 12,693,000 in full on 15 June 2024. Paying earlier.")
+
+
+def test_explanation_numbers_still_distinguish_real_differences():
+    from evaluation.score import _explanation_match
+    assert not _explanation_match("Pay EUR 620.40 today.", "Pay EUR 603.30 today.")
+    assert not _explanation_match("Pay IDR 12,693,000 today.", "Pay IDR 12,693,001 today.")

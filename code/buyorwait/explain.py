@@ -42,6 +42,25 @@ def _change_clause(candidate: Candidate, currency: str) -> str:
     return " and ".join(parts) + ", then "
 
 
+def _partial_was_the_only_route(request: Request, profile: Profile,
+                                safe: Decimal) -> bool:
+    """True when paying part today was the user's sole eligible way to proceed.
+
+    Derived from all seven not-recommended samples: the 'Although ... is
+    available today' wording appears exactly when the request allows partial
+    payment, the user accepts it, neither full payment nor any installment plan
+    is open to them, and something can be paid today.
+    """
+    methods = set(profile.payment_methods_user_will_consider)
+    installments_open = ("installments" in methods
+                         and profile.max_installment_months is not None)
+    return (request.allows_partial_payment
+            and "partial_payment" in methods
+            and "full_payment" not in methods
+            and not installments_open
+            and safe > 0)
+
+
 def render(candidate: Candidate | None, request: Request, profile: Profile,
            safe: Decimal) -> str:
     ccy = profile.home_currency
@@ -50,6 +69,12 @@ def render(candidate: Candidate | None, request: Request, profile: Profile,
 
     # T7 - no safe eligible option exists at all.
     if candidate is None:
+        if _partial_was_the_only_route(request, profile, safe):
+            # T7b: something is available today, but the only route the user
+            # accepts - paying part now - cannot complete within the window.
+            return (f"Do not proceed with the {total} request. Although "
+                    f"{fmt_currency(ccy, safe)} is available today, the full amount "
+                    f"cannot be completed safely within {HORIZON_DAYS} days.")
         return (f"Do not make this payment by "
                 f"{long_date(request.desired_completion_date)}. "
                 f"None of the available options keeps the {minimum} minimum "
@@ -74,6 +99,12 @@ def render(candidate: Candidate | None, request: Request, profile: Profile,
     # T6 - wait for a later date.
     if candidate.method == "wait":
         when, amount = candidate.payments[0]
+        if when < request.desired_completion_date:
+            # T6b: the money is safe before the deadline, so the advice is to
+            # wait for that date rather than to pay at the last moment.
+            return (f"Wait until {long_date(when)}, then pay "
+                    f"{fmt_currency(ccy, amount)} in full. Paying sooner would put "
+                    f"the {minimum} minimum at risk.")
         return (f"Pay {fmt_currency(ccy, amount)} in full on {long_date(when)}. "
                 f"Paying earlier would take the balance below the {minimum} "
                 f"minimum.")

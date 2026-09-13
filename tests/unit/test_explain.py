@@ -102,7 +102,7 @@ def test_t5_installments():
 
 def test_t6_wait():
     c = cand("wait", [(date(2019, 11, 15), D("5491000"))], status="affordable_later")
-    got = render(c, req(amount="5491000", rd=date(2019, 9, 3)),
+    got = render(c, req(amount="5491000", rd=date(2019, 9, 3), dcd=date(2019, 11, 15)),
                  prof("IDR", "2668700"), D("873000"))
     assert got == (
         "Pay IDR 5,491,000 in full on 15 November 2019. Paying earlier would take "
@@ -143,3 +143,60 @@ def test_every_explanation_names_the_home_currency():
     for c in cases:
         out = render(c, req(amount="100"), prof("ZAR", "500"), D("40"))
         assert "ZAR" in out and out.strip()
+
+
+# ---------------------------------------------------------------------------
+# Template selection between variants, derived from every labeled sample.
+# ---------------------------------------------------------------------------
+
+def prof_methods(ccy, minimum, methods, max_months=None):
+    return Profile("user_x", ccy, D("1000"), D(minimum), (), (), (), (),
+                   methods, max_months)
+
+
+def test_wait_before_the_deadline_uses_the_wait_until_wording():
+    c = cand("wait", [(date(2024, 6, 15), D("12693000"))], status="affordable_later")
+    got = render(c, req(amount="12693000", rd=date(2024, 6, 4), dcd=date(2024, 6, 19)),
+                 prof("IDR", "30686600"), D("8401800"))
+    assert got == (
+        "Wait until 15 June 2024, then pay IDR 12,693,000 in full. Paying sooner "
+        "would put the IDR 30,686,600 minimum at risk."
+    )
+
+
+def test_wait_on_the_deadline_itself_uses_the_pay_in_full_on_wording():
+    c = cand("wait", [(date(2019, 11, 15), D("5491000"))], status="affordable_later")
+    got = render(c, req(amount="5491000", rd=date(2019, 9, 3), dcd=date(2019, 11, 15)),
+                 prof("IDR", "2668700"), D("873000"))
+    assert got.startswith("Pay IDR 5,491,000 in full on 15 November 2019.")
+
+
+def test_not_recommended_when_partial_payment_was_the_only_route():
+    r = Request("request_x", "user_x", date(2025, 8, 4), "debt_repayment", D("5414.2"),
+                date(2025, 10, 4), True, "t")
+    p = prof_methods("EUR", "2200", ("partial_payment",))
+    assert render(None, r, p, D("597.74")) == (
+        "Do not proceed with the EUR 5,414.20 request. Although EUR 597.74 is "
+        "available today, the full amount cannot be completed safely within 90 days."
+    )
+
+
+def test_not_recommended_with_other_eligible_routes_uses_none_of_the_options():
+    r = Request("request_x", "user_x", date(2024, 12, 6), "purchase", D("266700"),
+                date(2025, 2, 10), True, "t")
+    p = prof_methods("INR", "225400", ("partial_payment", "installments"), 6)
+    assert render(None, r, p, D("12700")).startswith("Do not make this payment by")
+
+
+def test_not_recommended_when_partial_is_not_allowed_uses_none_of_the_options():
+    r = Request("request_x", "user_x", date(2026, 1, 6), "investment", D("3685"),
+                date(2026, 2, 1), False, "t")
+    p = prof_methods("EUR", "1200", ("partial_payment",))
+    assert render(None, r, p, D("83.05")).startswith("Do not make this payment by")
+
+
+def test_not_recommended_with_nothing_available_today_uses_none_of_the_options():
+    r = Request("request_x", "user_x", date(2025, 8, 4), "debt_repayment", D("5414.2"),
+                date(2025, 10, 4), True, "t")
+    p = prof_methods("EUR", "2200", ("partial_payment",))
+    assert render(None, r, p, D("0")).startswith("Do not make this payment by")

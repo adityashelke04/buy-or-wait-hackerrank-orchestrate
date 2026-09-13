@@ -26,7 +26,10 @@ FIELDS = [
 # explanation is graded on whether it names the same numeric facts.
 AMOUNT_TOLERANCE = Decimal("0.005")
 
-_NUMBERS = re.compile(r"\d[\d,]*\.?\d*")
+# A number must END in a digit, so trailing sentence punctuation is never part of
+# it: "15 June 2024, then" and "15 June 2024. Paying" both yield "2024". An earlier
+# pattern let the comma or full stop leak in and graded correct text as wrong.
+_NUMBERS = re.compile(r"\d[\d,]*\d(?:\.\d+)?|\d")
 
 
 @dataclass
