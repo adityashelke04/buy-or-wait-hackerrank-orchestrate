@@ -97,3 +97,23 @@ def test_with_extra_merges_and_keeps_order():
     merged = curve.with_extra([(date(2024, 3, 10), Decimal("-50"))])
     assert list(merged.flows) == sorted(merged.flows, key=lambda f: f[0])
     assert (date(2024, 3, 10), Decimal("-50")) in merged.flows
+
+
+def test_a_monthly_bill_due_on_the_request_date_that_has_not_settled_is_charged():
+    """Education falls due on the 7th; the request is made on the 7th and the
+    payment is not in history yet, so the money is still going out."""
+    edu = Series(category="education", description="School fee", template_event_id="event_e",
+                 cadence="monthly", anchor=7, amount=Decimal("89"), direction="debit",
+                 flexibility="fixed", minimum_allowed_amount=None, last_seen=date(2025, 1, 7))
+    view = LedgerView([], prof(), EMPTY_RATES)
+    curve = build(view, [edu], date(2025, 2, 7))
+    assert (date(2025, 2, 7), Decimal("-89")) in curve.flows
+
+
+def test_a_bill_that_settled_on_the_request_date_is_not_charged_again():
+    edu = Series(category="education", description="School fee", template_event_id="event_e",
+                 cadence="monthly", anchor=7, amount=Decimal("89"), direction="debit",
+                 flexibility="fixed", minimum_allowed_amount=None, last_seen=date(2025, 2, 7))
+    view = LedgerView([], prof(), EMPTY_RATES)
+    curve = build(view, [edu], date(2025, 2, 7))
+    assert (date(2025, 2, 7), Decimal("-89")) not in curve.flows

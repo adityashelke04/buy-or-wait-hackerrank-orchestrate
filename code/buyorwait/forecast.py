@@ -48,7 +48,15 @@ def build(view: LedgerView, series: list[Series], request_date: date,
 
     projected: list[tuple[date, Decimal]] = []
     for s in series:
-        for when in s.occurrences(request_date, end):
+        # A bill due ON the request date that has not settled yet is still
+        # money going out. It has not settled exactly when the series was last
+        # seen before today, so start the window a day early in that case.
+        # (from_last series already treat the start date inclusively.)
+        after = (request_date - timedelta(days=1)
+                 if not s.from_last and s.last_seen < request_date else request_date)
+        for when in s.occurrences(after, end):
+            if when < request_date:
+                continue
             if (when, s.category) in covered:
                 continue
             projected.append((when, s.signed_amount))

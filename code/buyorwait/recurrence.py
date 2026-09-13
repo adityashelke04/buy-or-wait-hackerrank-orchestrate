@@ -268,6 +268,16 @@ def detect(events: list[Event], profile: Profile, rates: RateTable,
 
     series.extend(_series_from(by_category, profile, rates, estimator,
                                min_observations, allow_any_cadence))
+
+    # Pass 3: recover categories the calendar bands reject. The dataset also
+    # schedules spending every 10 or 14 days; such a category is neither weekly
+    # nor monthly, so passes 1 and 2 drop it and the forecast silently omits,
+    # say, all dining. It returns here as a fixed-interval series, and nothing
+    # the calendar model already detects is touched.
+    series.extend(_recover_interval_categories(
+        usable, {s.category for s in series}, profile, rates, estimator,
+        min_observations))
+
     if _income_terminated(events, as_of):
         series = [s for s in series if s.direction != "credit"]
     elif not any(s.category == "salary" and s.direction == "credit" for s in series):
@@ -292,6 +302,47 @@ def _consistent_interval(gaps: list[int]) -> int | None:
         return None
     agree = sum(1 for g in gaps if abs(g - step) <= 1)
     return step if agree / len(gaps) >= CADENCE_AGREEMENT else None
+
+
+def _recover_interval_categories(usable: list[Event], covered: set[str],
+                                 profile: Profile, rates: RateTable,
+                                 estimator: str, min_observations: int) -> list[Series]:
+    estimate = ESTIMATORS[estimator]
+    # Only ESSENTIAL spending is recovered - "forecast essential variable
+    # spending conservatively". The user's protected categories are the
+    # dataset's own statement of what is essential. Recovering discretionary
+    # categories such as dining as well was measured and cost 12 points.
+    essential = set(profile.expense_categories_to_protect)
+    groups: dict[str, list[Event]] = defaultdict(list)
+    for e in usable:
+        if e.category not in covered and e.category in essential:
+            groups[e.category].append(e)
+    out: list[Series] = []
+    for category in sorted(groups):
+        members = _without_one_offs(groups[category])
+        members.sort(key=lambda e: (e.settlement_date, e.event_id))
+        if len(members) < min_observations:
+            continue
+        if members[-1].direction == "credit" and not _income_is_stable(members):
+            continue
+        gaps = [(b.settlement_date - a.settlement_date).days
+                for a, b in zip(members, members[1:])]
+        step = _consistent_interval(gaps)
+        if step is None:
+            continue
+        recent = members[-RECENT_WINDOW:]
+        amounts = [rates.convert(e.amount, e.currency, profile.home_currency,
+                                 e.settlement_date) for e in recent]
+        latest = members[-1]
+        out.append(Series(
+            category=category, description=latest.description,
+            template_event_id=latest.event_id, cadence="interval",
+            anchor=latest.settlement_date.day, amount=estimate(amounts),
+            direction=latest.direction, flexibility=latest.flexibility,
+            minimum_allowed_amount=latest.minimum_allowed_amount,
+            last_seen=latest.settlement_date, interval_days=step, from_last=True,
+        ))
+    return out
 
 
 def _detect_interval(events: list[Event], profile: Profile, rates: RateTable,

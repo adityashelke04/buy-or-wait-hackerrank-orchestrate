@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+from dataclasses import replace
 from decimal import Decimal
 
 from buyorwait.fx import RateTable
@@ -384,3 +385,36 @@ def test_gig_worker_without_a_scheduled_salary_gets_no_fallback_income():
     pays = [_pay(f"event_{i}", date(2024, 11, 4) + timedelta(days=7 * i), a,
                  "Delivery platform payout") for i, a in enumerate(amounts)]
     assert _income(detect(pays, prof(), EMPTY_RATES, date(2024, 12, 6))) == []
+
+
+# ---------------------------------------------------------------------------
+# Hybrid: the calendar model keeps everything it detects, and a category it
+# rejects (a 10- or 14-day rhythm) is recovered as a fixed-interval series.
+# ---------------------------------------------------------------------------
+
+def test_calendar_model_recovers_an_essential_fourteen_day_category():
+    """Transport every 14 days is neither weekly nor monthly, so the calendar
+    bands reject it; because the user protects transport it is essential and is
+    recovered as a fixed-interval series."""
+    days = [date(2024, 10, 3) + timedelta(days=14 * i) for i in range(8)]
+    events = [ev(f"event_t{i}", d, "48", category="transport", description=f"Trip {i}")
+              for i, d in enumerate(days)]
+    p = replace(prof(), expense_categories_to_protect=("transport",))
+    s = detect(events, p, EMPTY_RATES, as_of=date(2025, 2, 7))
+    assert len(s) == 1 and s[0].interval_days == 14 and s[0].from_last
+
+
+def test_a_discretionary_fourteen_day_category_is_not_recovered():
+    """Dining is not protected, so it is discretionary and stays out of the
+    essential-spending forecast."""
+    days = [date(2024, 10, 3) + timedelta(days=14 * i) for i in range(8)]
+    events = [ev(f"event_d{i}", d, "48", category="dining", description=f"Meal {i}")
+              for i, d in enumerate(days)]
+    p = replace(prof(), expense_categories_to_protect=("rent",))
+    assert detect(events, p, EMPTY_RATES, as_of=date(2025, 2, 7)) == []
+
+
+def test_calendar_hybrid_leaves_monthly_and_weekly_detection_unchanged():
+    rent = [ev(f"event_r{i}", date(2024, m, 1), "467.50") for i, m in enumerate((1, 2, 3))]
+    s = detect(rent, prof(), EMPTY_RATES, as_of=date(2024, 3, 5))
+    assert s[0].cadence == "monthly" and not s[0].from_last
