@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from buyorwait.fx import RateTable
@@ -260,3 +260,127 @@ def test_a_confirmed_next_salary_establishes_a_monthly_income_series():
     assert s[0].cadence == "monthly" and s[0].anchor == 15
     assert s[0].amount == Decimal("23320")
     assert date(2024, 4, 15) in s[0].occurrences(date(2024, 3, 15), date(2024, 5, 31))
+
+
+# ---------------------------------------------------------------------------
+# The "interval" cadence model: each series recurs at its own fixed step,
+# projected from its last settled occurrence.
+# ---------------------------------------------------------------------------
+
+from datetime import timedelta as _td
+
+
+def _every(n_days, start, count, amount="50", category="groceries"):
+    return [ev(f"event_{category}{i}", start + _td(days=n_days * i), amount,
+               category=category, description=f"Shop variant {i}")
+            for i in range(count)]
+
+
+def test_interval_model_detects_a_ten_day_step_and_projects_from_last_seen():
+    events = _every(10, date(2026, 5, 8), 6)             # last one 2026-06-27
+    s = detect(events, prof(), EMPTY_RATES, as_of=date(2026, 7, 7),
+               cadence_model="interval")
+    assert len(s) == 1 and s[0].interval_days == 10
+    assert s[0].occurrences(date(2026, 7, 7), date(2026, 7, 30)) == [
+        date(2026, 7, 7), date(2026, 7, 17), date(2026, 7, 27)]
+
+
+def test_interval_model_detects_a_fourteen_day_step():
+    events = _every(14, date(2024, 10, 1), 8, category="dining")
+    s = detect(events, prof(), EMPTY_RATES, as_of=date(2025, 2, 7),
+               cadence_model="interval")
+    assert [x.interval_days for x in s] == [14]
+
+
+def test_interval_model_projects_a_bill_due_today_that_has_not_settled():
+    days = [date(2024, 11, 7), date(2024, 12, 7), date(2025, 1, 7)]
+    events = [ev(f"event_{i}", d, "89", category="education") for i, d in enumerate(days)]
+    s = detect(events, prof(), EMPTY_RATES, as_of=date(2025, 2, 7),
+               cadence_model="interval")
+    assert date(2025, 2, 7) in s[0].occurrences(date(2025, 2, 7), date(2025, 3, 10))
+
+
+def test_interval_model_never_reprojects_an_occurrence_already_settled():
+    days = [date(2024, 12, 7), date(2025, 1, 7), date(2025, 2, 7)]
+    events = [ev(f"event_{i}", d, "89", category="education") for i, d in enumerate(days)]
+    s = detect(events, prof(), EMPTY_RATES, as_of=date(2025, 2, 7),
+               cadence_model="interval")
+    assert date(2025, 2, 7) not in s[0].occurrences(date(2025, 2, 7), date(2025, 3, 10))
+
+
+def test_interval_model_uses_the_mean_of_the_recent_window_by_default():
+    amounts = ["40", "60", "50", "70", "80", "90"]
+    events = [ev(f"event_{i}", date(2024, 1, 2) + _td(days=7 * i), a,
+                 category="groceries", description=f"v{i}")
+              for i, a in enumerate(amounts)]
+    s = detect(events, prof(), EMPTY_RATES, as_of=date(2024, 2, 10),
+               cadence_model="interval", estimator="mean", window=4)
+    assert s[0].amount == Decimal("72.5")                # mean of 50, 70, 80, 90
+
+
+def test_calendar_model_remains_the_unchanged_default():
+    days = [date(2024, 1, 2), date(2024, 1, 9), date(2024, 1, 16), date(2024, 1, 23)]
+    events = [ev(f"event_{i}", d, "50", category="transport",
+                 description="Commuter pass") for i, d in enumerate(days)]
+    s = detect(events, prof(), EMPTY_RATES, as_of=date(2024, 1, 25))
+    assert s[0].cadence == "weekly"
+
+
+# ---------------------------------------------------------------------------
+# Income confirmation policy: "count confirmed salary; do not invent
+# unsupported future income".
+# ---------------------------------------------------------------------------
+
+def _pay(eid, day, amount, desc="Payroll credit", status="settled"):
+    return ev(eid, day, amount, category="salary", description=desc,
+              direction="credit", status=status)
+
+
+def _income(series):
+    return [s for s in series if s.direction == "credit"]
+
+
+def test_stable_salary_is_projected():
+    pays = [_pay(f"event_{m}", date(2025, m, 15), "14740") for m in (6, 7, 8, 9)]
+    assert len(_income(detect(pays, prof(), EMPTY_RATES, date(2025, 9, 20)))) == 1
+
+
+def test_a_final_payroll_stops_income_projection():
+    """'Final employer payroll' means the job ended; nothing may be projected."""
+    pays = [_pay(f"event_{m}", date(2025, m, 15), "14740") for m in (6, 7, 8, 9)]
+    pays.append(_pay("event_10", date(2025, 10, 15), "14740", "Final employer payroll"))
+    assert _income(detect(pays, prof(), EMPTY_RATES, date(2025, 11, 6))) == []
+
+
+def test_volatile_gig_payouts_are_not_projected():
+    """Platform payouts swinging between 41k and 83k are not confirmed income."""
+    amounts = ["65488.36", "60517.87", "40977.52", "60877.41", "44415.5",
+               "47802.51", "82667.27", "52239.8"]
+    pays = [_pay(f"event_{i}", date(2024, 10, 11) + timedelta(days=7 * i), a,
+                 "Driver platform payout") for i, a in enumerate(amounts)]
+    assert _income(detect(pays, prof(), EMPTY_RATES, date(2024, 12, 6))) == []
+
+
+def test_a_one_off_short_payslip_does_not_make_a_regular_salary_volatile():
+    """One month reduced by unpaid leave is not volatility: most payments agree."""
+    pays = [_pay(f"event_{m}", date(2024, m, 15), "1422.85") for m in (9, 10, 11, 12)]
+    pays.append(_pay("event_j", date(2025, 1, 15), "782.57"))
+    s = _income(detect(pays, prof(), EMPTY_RATES, date(2025, 2, 7)))
+    assert len(s) == 1 and s[0].amount == Decimal("1422.85")
+
+
+def test_unconfirmed_variable_second_income_is_dropped_but_primary_kept():
+    primary = [_pay(f"event_p{m}", date(2023 + (m > 12), (m - 1) % 12 + 1, 15), "1343.54",
+                    "Primary household salary") for m in (11, 12, 13, 14)]
+    second = [_pay(f"event_s{i}", d, a, "Second household income") for i, (d, a) in
+              enumerate([(date(2023, 11, 20), "771.17"), (date(2023, 12, 20), "948.46"),
+                         (date(2024, 1, 20), "881.45")])]
+    s = _income(detect(primary + second, prof(), EMPTY_RATES, date(2024, 3, 7)))
+    assert [x.anchor for x in s] == [15]
+
+
+def test_gig_worker_without_a_scheduled_salary_gets_no_fallback_income():
+    amounts = ["65488.36", "40977.52", "82667.27"]
+    pays = [_pay(f"event_{i}", date(2024, 11, 4) + timedelta(days=7 * i), a,
+                 "Delivery platform payout") for i, a in enumerate(amounts)]
+    assert _income(detect(pays, prof(), EMPTY_RATES, date(2024, 12, 6))) == []

@@ -22,7 +22,9 @@ def decide(ds: Dataset, request: Request, rates: RateTable,
            extractor=None, estimator: str = DEFAULT_ESTIMATOR,
            horizon_days: int = forecast.HORIZON_DAYS,
            min_observations: int = recurrence.MIN_OBSERVATIONS,
-           project_income: bool = True) -> Decision:
+           project_income: bool = True,
+           cadence_model: str = "calendar",
+           window: int = recurrence.RECENT_WINDOW) -> Decision:
     profile = ds.profiles[request.user_id]
     events = list(ds.events_by_user.get(request.user_id, []))
 
@@ -33,7 +35,9 @@ def decide(ds: Dataset, request: Request, rates: RateTable,
     series = recurrence.detect(events, profile, rates, request.request_date,
                                estimator=estimator,
                                min_observations=min_observations,
-                               project_income=project_income)
+                               project_income=project_income,
+                               cadence_model=cadence_model,
+                               window=window)
     curve = forecast.build(view, series, request.request_date, horizon_days)
 
     minimum = profile.minimum_balance_to_keep
@@ -78,6 +82,8 @@ def run(dataset_dir: Path, out_path: Path, extractor=None,
         horizon_days: int = forecast.HORIZON_DAYS,
         min_observations: int = recurrence.MIN_OBSERVATIONS,
         project_income: bool = True,
+        cadence_model: str = "calendar",
+        window: int = recurrence.RECENT_WINDOW,
         validate_output: bool = True,
         usage_report_path: Path | None = None) -> list[Decision]:
     dataset_dir = Path(dataset_dir)
@@ -92,7 +98,7 @@ def run(dataset_dir: Path, out_path: Path, extractor=None,
 
     decisions = [
         decide(ds, r, rates, extractor, estimator, horizon_days,
-               min_observations, project_income)
+               min_observations, project_income, cadence_model, window)
         for r in requests
     ]
 

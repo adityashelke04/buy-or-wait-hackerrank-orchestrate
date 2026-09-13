@@ -12,9 +12,10 @@ Two rules from the problem statement drive this module:
 from __future__ import annotations
 
 import calendar
+import re
 import statistics
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Callable
@@ -53,6 +54,47 @@ ESTIMATORS: dict[str, Callable[[list[Decimal]], Decimal]] = {
 
 CADENCE_AGREEMENT = 0.6      # share of gaps that must sit inside the band
 OUTLIER_MULTIPLE = Decimal("3")   # above this multiple of the median = one-off
+
+
+# ---------------------------------------------------------------------------
+# Income confirmation policy
+#
+# "Count confirmed salary on its settlement date. Do not invent unsupported
+# future income." Three things make income unsupported in this dataset:
+#   - the job has ended ("Final employer payroll")
+#   - the amounts swing, as gig-platform payouts do (41k to 83k week to week)
+#   - it is a secondary, variable stream nobody has confirmed
+# Only stable, unterminated income is projected; a scheduled confirmed salary
+# row is always honoured.
+# ---------------------------------------------------------------------------
+
+STABLE_TOLERANCE = Decimal("0.02")   # within 2% of the typical payment
+STABLE_SHARE = 0.6                   # ... for most payments
+
+_TERMINATION = re.compile(
+    r"\b(?:final|last)\b[^.]{0,24}\b(?:payroll|salary|pay|payslip|paycheck)\b"
+    r"|terminat|contract (?:has )?ended|redundan|resign", re.I)
+
+
+def _income_is_stable(members: list[Event]) -> bool:
+    """Most payments sit within 2% of the median. One short month (unpaid leave)
+    does not make a regular salary volatile; gig payouts never qualify."""
+    amounts = sorted(e.amount for e in members)
+    median = amounts[len(amounts) // 2]
+    if median <= 0:
+        return False
+    within = sum(1 for a in amounts if abs(a - median) <= median * STABLE_TOLERANCE)
+    return within / len(amounts) >= STABLE_SHARE
+
+
+def _income_terminated(events: list[Event], as_of: date) -> bool:
+    """True when the most recent settled income says the job has ended."""
+    settled = [e for e in events if e.direction == "credit" and e.category == "salary"
+               and e.status == "settled" and e.settlement_date <= as_of]
+    if not settled:
+        return False
+    latest = max(settled, key=lambda e: (e.settlement_date, e.event_id))
+    return bool(_TERMINATION.search(latest.description))
 
 
 def _without_one_offs(members: list[Event]) -> list[Event]:
@@ -103,6 +145,8 @@ class Series:
     flexibility: str
     minimum_allowed_amount: Decimal | None
     last_seen: date
+    interval_days: int | None = None     # fixed step for the interval model
+    from_last: bool = False              # project from last_seen, not from 'after'
 
     @property
     def signed_amount(self) -> Decimal:
@@ -114,6 +158,8 @@ class Series:
 
     def occurrences(self, after: date, until: date) -> list[date]:
         """Projected dates strictly after `after` and on or before `until`."""
+        if self.from_last:
+            return self._occurrences_from_last(after, until)
         out: list[date] = []
         if self.cadence == "weekly":
             d = after + timedelta(days=1)
@@ -135,6 +181,38 @@ class Series:
         return sorted(out)
 
 
+def _occurrences_from_last(self: "Series", start: date, until: date) -> list[date]:
+    """Dates in [start, until] that fall after the last settled occurrence.
+
+    Projecting from last_seen does two jobs at once: a bill due ON the request
+    date that has not yet settled is included, because it falls after last_seen;
+    one that has already settled is not, because it IS last_seen.
+    """
+    out: list[date] = []
+    if self.interval_days:
+        step = timedelta(days=self.interval_days)
+        d = self.last_seen + step
+        while d <= until:
+            if d >= start:
+                out.append(d)
+            d += step
+        return out
+    year, month = self.last_seen.year, self.last_seen.month
+    for _ in range(40):
+        d = clamp_day(year, month, self.anchor)
+        if d > until:
+            break
+        if d > self.last_seen and d >= start:
+            out.append(d)
+        month += 1
+        if month == 13:
+            year, month = year + 1, 1
+    return out
+
+
+Series._occurrences_from_last = _occurrences_from_last
+
+
 def _family(event: Event) -> tuple[str, str]:
     """Group key. Description is part of it because one category can hold
     several distinct commitments - a music subscription and a delivery
@@ -147,7 +225,9 @@ def detect(events: list[Event], profile: Profile, rates: RateTable,
            min_observations: int = MIN_OBSERVATIONS,
            lookback_days: int = LOOKBACK_DAYS,
            allow_any_cadence: bool = False,
-           project_income: bool = True) -> list[Series]:
+           project_income: bool = True,
+           cadence_model: str = "calendar",
+           window: int = RECENT_WINDOW) -> list[Series]:
     """Two passes over the same history.
 
     Pass 1 groups by (category, description). That keeps distinct fixed
@@ -161,6 +241,11 @@ def detect(events: list[Event], profile: Profile, rates: RateTable,
     Restricting pass 2 to untouched categories is what stops rent being counted
     twice.
     """
+    if cadence_model == "interval":
+        return _detect_interval(events, profile, rates, as_of, estimator,
+                                min_observations, lookback_days, window,
+                                project_income)
+
     horizon_start = as_of - timedelta(days=lookback_days)
     usable = [
         e for e in resolve_links(events)
@@ -183,7 +268,9 @@ def detect(events: list[Event], profile: Profile, rates: RateTable,
 
     series.extend(_series_from(by_category, profile, rates, estimator,
                                min_observations, allow_any_cadence))
-    if not any(s.category == "salary" and s.direction == "credit" for s in series):
+    if _income_terminated(events, as_of):
+        series = [s for s in series if s.direction != "credit"]
+    elif not any(s.category == "salary" and s.direction == "credit" for s in series):
         confirmed = _confirmed_salary_series(events, profile, rates, as_of)
         if confirmed is not None:
             series.append(confirmed)
@@ -191,6 +278,81 @@ def detect(events: list[Event], profile: Profile, rates: RateTable,
     if not project_income:
         # Only confirmed income rows already in the ledger will count; a
         # recurring salary is not extrapolated past them.
+        series = [s for s in series if s.direction != "credit"]
+    series.sort(key=lambda s: (s.category, s.template_event_id))
+    return series
+
+
+def _consistent_interval(gaps: list[int]) -> int | None:
+    """The fixed step, in days, when the gaps agree on one."""
+    if not gaps:
+        return None
+    step = Counter(gaps).most_common(1)[0][0]
+    if not 2 <= step <= 60:
+        return None
+    agree = sum(1 for g in gaps if abs(g - step) <= 1)
+    return step if agree / len(gaps) >= CADENCE_AGREEMENT else None
+
+
+def _detect_interval(events: list[Event], profile: Profile, rates: RateTable,
+                     as_of: date, estimator: str, min_observations: int,
+                     lookback_days: int, window: int,
+                     project_income: bool) -> list[Series]:
+    """The interval cadence model.
+
+    The dataset schedules recurring money at exact steps - groceries every 7 or
+    10 days, dining and transport every 14, bills and salary monthly - and
+    rotates descriptions freely within a category. So each CATEGORY is one
+    series: monthly when its gaps look like months, otherwise its consistent
+    fixed step, projected forward from its last settled occurrence.
+    """
+    estimate = ESTIMATORS[estimator]
+    horizon_start = as_of - timedelta(days=lookback_days)
+    groups: dict[str, list[Event]] = defaultdict(list)
+    for e in resolve_links(events):
+        if (classify(e) is CashEffect.COUNT
+                and horizon_start <= e.settlement_date <= as_of):
+            groups[e.category].append(e)
+
+    series: list[Series] = []
+    for category in sorted(groups):
+        members = _without_one_offs(groups[category])
+        members.sort(key=lambda e: (e.settlement_date, e.event_id))
+        if len(members) < min_observations:
+            continue
+        if members[-1].direction == "credit" and not _income_is_stable(members):
+            continue
+        gaps = [(b.settlement_date - a.settlement_date).days
+                for a, b in zip(members, members[1:])]
+        step: int | None = None
+        if _fits(gaps, MONTHLY_GAP):
+            cadence = "monthly"
+        else:
+            step = _consistent_interval(gaps)
+            if step is None:
+                continue
+            cadence = "interval"
+        recent = members[-window:]
+        amounts = [rates.convert(e.amount, e.currency, profile.home_currency,
+                                 e.settlement_date) for e in recent]
+        latest = members[-1]
+        series.append(Series(
+            category=category, description=latest.description,
+            template_event_id=latest.event_id, cadence=cadence,
+            anchor=latest.settlement_date.day, amount=estimate(amounts),
+            direction=latest.direction, flexibility=latest.flexibility,
+            minimum_allowed_amount=latest.minimum_allowed_amount,
+            last_seen=latest.settlement_date, interval_days=step, from_last=True,
+        ))
+
+    if _income_terminated(events, as_of):
+        series = [s for s in series if s.direction != "credit"]
+    else:
+        confirmed = _confirmed_salary_series(events, profile, rates, as_of)
+        if confirmed is not None:
+            series = [s for s in series if s.category != "salary"]
+            series.append(replace(confirmed, from_last=True))
+    if not project_income:
         series = [s for s in series if s.direction != "credit"]
     series.sort(key=lambda s: (s.category, s.template_event_id))
     return series
@@ -209,6 +371,7 @@ def _confirmed_salary_series(events: list[Event], profile: Profile,
     salaries = [
         e for e in resolve_links(events)
         if e.category == "salary" and e.direction == "credit"
+        and e.status == "scheduled"
         and classify(e) is CashEffect.COUNT
         and e.settlement_date <= as_of + timedelta(days=45)
     ]
@@ -234,6 +397,8 @@ def _series_from(groups: dict[tuple[str, str], list[Event]], profile: Profile,
     for (category, _label), members in sorted(groups.items()):
         members = _without_one_offs(members)
         members.sort(key=lambda e: (e.settlement_date, e.event_id))
+        if members and members[-1].direction == "credit" and not _income_is_stable(members):
+            continue
         if len(members) < min_observations:
             continue
 
