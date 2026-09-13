@@ -24,7 +24,7 @@ No API key, no network and no GPU are needed.
 Run the tests:
 
 ```bash
-python -m pytest              # 269 tests, including OCR on the real images
+python -m pytest              # 294 tests, including OCR on the real images
 python -m pytest -m "not slow"  # skips the image tests for a faster loop
 ```
 
