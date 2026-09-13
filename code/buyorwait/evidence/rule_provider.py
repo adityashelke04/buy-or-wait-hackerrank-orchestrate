@@ -68,6 +68,10 @@ class RuleProvider:
     name = "rule"
 
     def complete_json(self, prompt: str, schema: dict):
+        from .usage import USAGE
+        USAGE.record(provider="rule-based (local, no model)",
+                     model="multilingual message parser",
+                     input_tokens=0, output_tokens=0)
         body = _untrusted_body(prompt)
         amendments: list[dict] = []
 

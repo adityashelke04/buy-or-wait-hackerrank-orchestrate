@@ -1,4 +1,4 @@
-"""OCR cross-check using RapidOCR - the ONNXRuntime build of PP-OCRv5.
+"""OCR cross-check using RapidOCR - the ONNXRuntime build of PP-OCR (v6 models).
 
 Chosen over Tesseract because it is markedly more accurate on structured
 documents such as payslips and invoices, installs with plain pip on Windows with
@@ -29,7 +29,11 @@ def _engine():
 
 @lru_cache(maxsize=64)
 def read_text(png: Path) -> str:
+    from .usage import USAGE
     result = _engine()(str(png))
+    USAGE.record(provider="rapidocr (local, ONNXRuntime)",
+                 model="PP-OCRv6 detection + recognition",
+                 input_tokens=0, output_tokens=0)
     lines = getattr(result, "txts", None) or []
     return "\n".join(str(line) for line in lines)
 

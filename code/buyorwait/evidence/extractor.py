@@ -77,6 +77,7 @@ class Extractor:
         default = Path(__file__).resolve().parents[3] / "evaluation" / "llm_cache.json"
         self.cache = Cache(cache_path or default)
         self._messages_override: list[Message] | None = None
+        self._messages_by_user: dict[str, list[Message]] | None = None
 
     @classmethod
     def from_env(cls, dataset_dir: Path, backend: str | None = None) -> "Extractor":
@@ -181,9 +182,12 @@ class Extractor:
             return self._messages_override
         if self.dataset_dir is None:
             return []
-        from ..io_loaders import load_dataset
-        return load_dataset(self.dataset_dir).messages_by_user.get(
-            profile.user_id, [])
+        if self._messages_by_user is None:
+            # Loaded once per run, not once per request: the dataset holds 25k
+            # events and re-reading it 250 times dominated the runtime.
+            from ..io_loaders import load_dataset
+            self._messages_by_user = load_dataset(self.dataset_dir).messages_by_user
+        return self._messages_by_user.get(profile.user_id, [])
 
     def apply(self, events: list[Event], request: Request,
               profile: Profile) -> list[Event]:

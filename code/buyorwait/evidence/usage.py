@@ -32,7 +32,7 @@ class Usage:
         total_out = sum(self.output_tokens.values())
         total = total_in + total_out
         elapsed = time.time() - self.started
-        local = all(p == "ollama" for (p, _) in self.calls) if self.calls else True
+        local = not any(p.startswith("cloud") for (p, _) in self.calls)
 
         est = 0.0
         for (provider, model) in self.calls:
@@ -69,7 +69,7 @@ class Usage:
             f"- Average tokens per request: **{total / requests if requests else 0:,.1f}**",
             "", "## Cost", "",
             f"- Actual cost: **${actual:,.4f}**"
-            + ("  (models run locally via Ollama; no metered API was used)"
+            + ("  (everything ran locally; no metered API was called)"
                if local else ""),
             f"- Per request: **${actual / (requests or 1):,.6f}**",
         ]
@@ -77,6 +77,21 @@ class Usage:
             lines.append(
                 "- Cloud-equivalent estimate at Gemini 2.0 Flash list prices: "
                 f"**${(total_in / 1e6) * 0.10 + (total_out / 1e6) * 0.40:,.4f}**")
+        if local and total == 0 and total_calls:
+            lines += [
+                "", "## Why the token counts are zero", "",
+                "The final run used only local, non-generative components. RapidOCR "
+                "is a text-detection and recognition network (PP-OCRv6 via "
+                "ONNXRuntime): it processes image pixels and has no token "
+                "vocabulary, so it reports calls rather than tokens. The message "
+                "parser is rule-based and consumes no tokens. Every number in "
+                "output.csv is computed by the deterministic simulator, which is "
+                "why no language model was needed to produce it.",
+                "",
+                "An optional cloud backend (Google AI Studio, Gemini) is "
+                "implemented behind `--backend cloud`. When used, its real prompt "
+                "and completion token counts are recorded in this same report.",
+            ]
         lines += ["", "No API keys, credentials or sensitive configuration are "
                   "included in this report.", ""]
 

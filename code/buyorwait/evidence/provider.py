@@ -37,9 +37,6 @@ class StubProvider:
 
 def build(backend: str | None = None) -> LLMProvider:
     backend = backend or os.environ.get("LLM_BACKEND", "rule")
-    if backend == "ollama":
-        from .ollama_provider import OllamaProvider
-        return OllamaProvider()
     if backend == "cloud":
         from .cloud_provider import CloudProvider
         return CloudProvider()

@@ -78,7 +78,8 @@ def run(dataset_dir: Path, out_path: Path, extractor=None,
         horizon_days: int = forecast.HORIZON_DAYS,
         min_observations: int = recurrence.MIN_OBSERVATIONS,
         project_income: bool = True,
-        validate_output: bool = True) -> list[Decision]:
+        validate_output: bool = True,
+        usage_report_path: Path | None = None) -> list[Decision]:
     dataset_dir = Path(dataset_dir)
     ds = load_dataset(dataset_dir)
     rates = RateTable(ds.rates)
@@ -104,4 +105,8 @@ def run(dataset_dir: Path, out_path: Path, extractor=None,
             )
 
     write(decisions, out_path)
+
+    if usage_report_path is not None:
+        from .evidence.usage import USAGE
+        USAGE.write_report(Path(usage_report_path), requests=len(decisions))
     return decisions
