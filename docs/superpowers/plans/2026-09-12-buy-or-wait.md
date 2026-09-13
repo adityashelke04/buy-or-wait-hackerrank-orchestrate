@@ -1,5 +1,7 @@
 # Buy or Wait? Implementation Plan
 
+> **Historical note (added at submission).** This is the plan as written before the build. Two choices changed during implementation, and the code, not this document, is authoritative: the local Ollama backend was dropped in favour of a model-free rule parser, and Tesseract was replaced by RapidOCR (PP-OCRv6) for reading images. Machine-specific paths, local endpoints and account names have been replaced with placeholders. See `README.md` for the system as shipped.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Produce `output.csv` with one safe, well-explained financial recommendation for each of the 250 rows in `dataset/requests.csv`.
@@ -20,7 +22,7 @@
 - No hardcoded labels: no `request_id`→answer or `event_id`→value map anywhere in `code/`.
 - `dataset/sample_requests.csv` may be read **only** by `evaluation/score.py`.
 - Secrets come from env vars only: `LLM_BACKEND`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`.
-- Ollama installs to `D:\ollama`; models to `D:\ollama\models`. Never `C:`.
+- Ollama installs to `<ollama-dir>`; models to `<ollama-dir>\models`. Never `C:`.
 - Deterministic: sorted iteration, `temperature=0`, `seed=0`, on-disk response cache. Two runs must be byte-identical.
 - Submission ZIP under 50 MB.
 - Commits are progressive: `test:` (red) → `feat:`/`fix:` (green) → `refactor:`. Never commit a broken state.
@@ -82,7 +84,7 @@ tests/
 - [ ] **Step 1: Create project scaffolding**
 
 ```bash
-cd "D:/Orca/projects/hackerrank-orchestrate-september26/hackerrank-orchestrate-september26"
+cd "<repo-root>"
 mkdir -p code/buyorwait/evidence evaluation tests/unit tests/contract tests/golden tests/smoke tests/fixtures
 touch code/buyorwait/__init__.py code/buyorwait/evidence/__init__.py
 python -m pip install pytest
@@ -4302,25 +4304,25 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```powershell
 # Download the installer, then install to D: - NOT the default C: location.
 $url = "https://ollama.com/download/OllamaSetup.exe"
-Invoke-WebRequest -Uri $url -OutFile "D:\ollama-setup.exe"
-Start-Process -Wait -FilePath "D:\ollama-setup.exe" -ArgumentList '/DIR="D:\ollama"'
+Invoke-WebRequest -Uri $url -OutFile "<ollama-installer>"
+Start-Process -Wait -FilePath "<ollama-installer>" -ArgumentList '/DIR="<ollama-dir>"'
 
 # Models must also live on D:. Set this BEFORE the first pull.
-[Environment]::SetEnvironmentVariable("OLLAMA_MODELS", "D:\ollama\models", "User")
-$env:OLLAMA_MODELS = "D:\ollama\models"
+[Environment]::SetEnvironmentVariable("OLLAMA_MODELS", "<ollama-dir>\models", "User")
+$env:OLLAMA_MODELS = "<ollama-dir>\models"
 ```
 
 Then pull the two models (sized to fit entirely in the 4 GB VRAM so generation stays on the GPU):
 ```powershell
-& "D:\ollama\ollama.exe" pull qwen2.5:3b-instruct-q4_K_M
-& "D:\ollama\ollama.exe" pull qwen2.5vl:3b
-& "D:\ollama\ollama.exe" list
+& "<ollama-dir>\ollama.exe" pull qwen2.5:3b-instruct-q4_K_M
+& "<ollama-dir>\ollama.exe" pull qwen2.5vl:3b
+& "<ollama-dir>\ollama.exe" list
 ```
 
 Verify nothing landed on C:
 ```powershell
 Test-Path "$env:USERPROFILE\.ollama\models\blobs"   # expect False
-Get-ChildItem "D:\ollama\models\blobs" | Measure-Object -Sum Length |
+Get-ChildItem "<ollama-dir>\models\blobs" | Measure-Object -Sum Length |
   ForEach-Object { "D: model bytes = {0:N0}" -f $_.Sum }
 ```
 Expected: `False`, and a non-zero byte count on D:.
@@ -4334,7 +4336,7 @@ body = json.dumps({"model": "qwen2.5:3b-instruct-q4_K_M",
                    "stream": False, "format": "json",
                    "options": {"temperature": 0, "seed": 0}}).encode()
 t = time.time()
-req = urllib.request.Request("http://127.0.0.1:11434/api/generate", body,
+req = urllib.request.Request("<ollama-endpoint>/api/generate", body,
                              {"Content-Type": "application/json"})
 out = json.load(urllib.request.urlopen(req, timeout=180))
 print(f"{time.time()-t:.2f}s ->", out["response"][:80])
@@ -4535,7 +4537,7 @@ from pathlib import Path
 
 from .usage import USAGE
 
-ENDPOINT = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
+ENDPOINT = os.environ.get("OLLAMA_HOST", "<ollama-endpoint>")
 TEXT_MODEL = os.environ.get("LLM_MODEL", "qwen2.5:3b-instruct-q4_K_M")
 VISION_MODEL = os.environ.get("LLM_VISION_MODEL", "qwen2.5vl:3b")
 TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "180"))
@@ -5457,7 +5459,7 @@ Replace `README.md` with a document covering, in this order:
 1. **What this is** — one paragraph on the problem and the approach.
 2. **Quick start** — `pip install -r requirements.txt`, then `python code/main.py`, and where `output.csv` lands.
 3. **Running without a model** — `python code/main.py` uses the deterministic path by default and requires no key, no network and no Ollama.
-4. **Running with the local model** — install Ollama to `D:\ollama`, set `OLLAMA_MODELS`, pull the two models, then `python code/main.py --backend ollama`.
+4. **Running with the local model** — install Ollama to `<ollama-dir>`, set `OLLAMA_MODELS`, pull the two models, then `python code/main.py --backend ollama`.
 5. **Running with a cloud key** — copy `.env.example`, set `LLM_API_KEY`, then `--backend cloud`. State plainly that keys are read from the environment only.
 6. **Approach** — the deterministic simulator, the closed-form safe amount, the six-rung ranking, and the model confined to evidence extraction. Link `docs/superpowers/specs/2026-09-12-buy-or-wait-design.md`.
 7. **Testing** — `python -m pytest`, and what each of the four layers guards.

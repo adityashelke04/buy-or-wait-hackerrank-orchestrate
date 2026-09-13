@@ -1,6 +1,14 @@
-pytest>=8.0
-# Optional backends. The core pipeline runs without these.
-openai>=1.0        # used only for LLM_BACKEND=cloud (Google AI Studio / Groq / OpenRouter)
-rapidocr>=3.9.2    # OCR cross-check for the 16 image-backed amounts (Apache-2.0, CPU)
+# Tested with Python 3.13: pytest 9.1, rapidocr 3.9.2, onnxruntime 1.30, Pillow 12.0, openai 2.38.
+# The decision core is standard library only.
+
+# Needed by the default run: reads the 16 image-backed blank amounts.
+# The OCR models ship inside the rapidocr wheel, so no download happens at run time.
+rapidocr>=3.9.2
 onnxruntime>=1.18
 Pillow>=10.0
+
+# Tests.
+pytest>=8.0
+
+# Optional: only for --backend cloud (Google AI Studio, or any OpenAI-compatible API).
+openai>=1.0

@@ -23,7 +23,14 @@ _NUMBER = re.compile(r"\d[\d,. ]*\d|\d")
 
 @lru_cache(maxsize=1)
 def _engine():
+    import logging
+
     from rapidocr import RapidOCR
+    # RapidOCR logs every model file it loads, with absolute install paths, and
+    # resets its own log level as it loads. A filter survives that: warnings
+    # and errors still show, the chatter does not.
+    logging.getLogger("RapidOCR").addFilter(
+        lambda record: record.levelno >= logging.WARNING)
     return RapidOCR()
 
 

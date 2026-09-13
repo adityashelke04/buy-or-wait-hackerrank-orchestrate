@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from buyorwait.evidence.extractor import Extractor
+from buyorwait.evidence.rule_provider import RuleProvider
 from buyorwait.io_loaders import load_dataset
 from buyorwait.pipeline import run
 from buyorwait.validate import check_all
@@ -21,8 +23,11 @@ METHODS = {"full_payment", "partial_payment", "installments", "wait", "not_recom
 
 @pytest.fixture(scope="module")
 def result(tmp_path_factory):
+    """The shipped configuration: the rule evidence reader, OCR included."""
     out = tmp_path_factory.mktemp("out") / "output.csv"
-    decisions = run(DATASET, out)
+    extractor = Extractor(RuleProvider(), DATASET,
+                          cache_path=tmp_path_factory.mktemp("cache") / "c.json")
+    decisions = run(DATASET, out, extractor=extractor)
     return load_dataset(DATASET), decisions, out
 
 
@@ -112,8 +117,12 @@ def test_installment_plans_reproduce_a_supplied_option(result):
             freq = o.payment_frequency_days or 0
             dates = [o.first_payment_date + timedelta(days=freq * i)
                      for i in range(o.number_of_payments)]
-            plans.add("|".join(f"{x.isoformat()}:{o.payment_amount_text}" for x in dates))
-        assert d.payment_plan in plans, f"{d.request_id}: {d.payment_plan}"
+            plans.add(tuple((x, o.payment_amount) for x in dates))
+        # Same dates and the same amounts by value: 984.6 in the options file is
+        # written 984.60 in a plan, as the labeled samples write their amounts.
+        got = tuple((date.fromisoformat(day), Decimal(amount))
+                    for day, _, amount in (p.partition(":") for p in d.payment_plan.split("|")))
+        assert got in plans, f"{d.request_id}: {d.payment_plan}"
 
 
 def test_payment_plan_is_chronological_and_well_formed(result):

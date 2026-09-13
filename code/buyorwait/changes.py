@@ -11,6 +11,7 @@ figure.
 """
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
@@ -18,7 +19,7 @@ from itertools import combinations as _combos
 from typing import Iterator
 
 from .forecast import Curve
-from .money import fmt_plain
+from .money import fmt_amount
 from .recurrence import Series
 from .types import Profile
 
@@ -36,7 +37,7 @@ class Change:
     def render(self) -> str:
         if self.kind == "stop":
             return f"stop:{self.event_id}"
-        return f"reduce_to:{self.event_id}:{fmt_plain(self.new_amount)}"
+        return f"reduce_to:{self.event_id}:{fmt_amount(self.new_amount)}"
 
     @property
     def phrase(self) -> str:
@@ -86,28 +87,30 @@ def apply(curve: Curve, chosen: list[Change], request_date: date, end: date) -> 
     """Rewrite the curve with the chosen changes in force from the request date.
 
     Flows are matched back to their series by (date, signed amount), which is
-    exactly how forecast.build emitted them.
+    exactly how forecast.build emitted them. Each projected occurrence consumes
+    ONE matching flow: two different 47.00 bills on the same day are two flows,
+    and stopping one of them must leave the other in place.
     """
     if not chosen:
         return curve
 
-    targets: dict[str, set[tuple[date, Decimal]]] = {}
-    for c in chosen:
-        occ = c.series.occurrences(request_date - timedelta(days=1), end)
-        targets[c.event_id] = {(d, c.series.signed_amount) for d in occ}
-
-    stopped = [c for c in chosen if c.kind == "stop"]
-    reduced = [c for c in chosen if c.kind == "reduce_to"]
+    remaining: dict[str, Counter] = {
+        c.event_id: Counter((d, c.series.signed_amount)
+                            for d in c.series.occurrences(request_date - timedelta(days=1), end))
+        for c in chosen
+    }
+    ordered = ([c for c in chosen if c.kind == "stop"]
+               + [c for c in chosen if c.kind == "reduce_to"])
 
     flows: list[tuple[date, Decimal]] = []
     for when, amount in curve.flows:
-        if any((when, amount) in targets[c.event_id] for c in stopped):
+        change = next((c for c in ordered if remaining[c.event_id][(when, amount)] > 0), None)
+        if change is None:
+            flows.append((when, amount))
             continue
-        for c in reduced:
-            if (when, amount) in targets[c.event_id]:
-                amount = -c.new_amount
-                break
-        flows.append((when, amount))
+        remaining[change.event_id][(when, amount)] -= 1
+        if change.kind == "reduce_to":
+            flows.append((when, -change.new_amount))
 
     return Curve(curve.start, curve.end, curve.opening,
                  tuple(sorted(flows, key=lambda f: f[0])))

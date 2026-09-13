@@ -66,6 +66,7 @@ def _untrusted_body(prompt: str) -> str:
 
 class RuleProvider:
     name = "rule"
+    cacheable = False            # deterministic and instant: never served from disk
 
     def complete_json(self, prompt: str, schema: dict):
         from .usage import USAGE

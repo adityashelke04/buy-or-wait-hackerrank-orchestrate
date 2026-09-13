@@ -47,7 +47,9 @@ class Usage:
             "Covers the final full-dataset run that produced `output.csv`.", "",
             f"- Requests processed: **{requests}**",
             f"- Wall-clock duration: **{elapsed:.1f}s**",
-            f"- Cache hits / misses: **{self.cache_hits} / {self.cache_misses}**",
+            (f"- Response cache hits / misses: **{self.cache_hits} / {self.cache_misses}**"
+             if self.cache_hits or self.cache_misses else
+             "- Response cache: **not used** (local components re-run on every request)"),
             "", "## Per model", "",
             "| Provider | Model | Calls | Input tokens | Output tokens | Total |",
             "|---|---|---:|---:|---:|---:|",

@@ -173,3 +173,14 @@ def test_the_message_text_sits_inside_the_fence():
     prompt = build_prompt(["SECRETPAYLOAD"], home_currency="EUR")
     body = prompt.split("<<<UNTRUSTED_DATA>>>")[1].split("<<<END_UNTRUSTED_DATA>>>")[0]
     assert "SECRETPAYLOAD" in body
+
+
+def test_deterministic_local_provider_is_never_served_from_the_disk_cache(tmp_path):
+    """A cached answer from an older version of the rule parser must not survive
+    an edit to that parser, so the rule provider bypasses the cache entirely."""
+    from buyorwait.evidence.rule_provider import RuleProvider
+    path = tmp_path / "c.json"
+    e = Extractor(RuleProvider(), None, cache_path=path)
+    payload = e._ask(("m1", "prompt"), lambda: {"amendments": []})
+    assert payload == {"amendments": []}
+    assert not path.exists(), "nothing may be written for a non-cacheable provider"

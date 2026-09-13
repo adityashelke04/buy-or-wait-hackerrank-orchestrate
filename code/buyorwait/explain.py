@@ -9,14 +9,13 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
+from .forecast import HORIZON_DAYS
 from .money import fmt_currency
 from .ranker import Candidate
 from .types import Profile, Request
 
 MONTHS = ["January", "February", "March", "April", "May", "June",
           "July", "August", "September", "October", "November", "December"]
-
-HORIZON_DAYS = 90
 
 
 def long_date(d: date) -> str:

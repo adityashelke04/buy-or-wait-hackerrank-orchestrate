@@ -4,10 +4,13 @@ Every amount in this project is a Decimal parsed directly from its string form.
 Floats are never used: 0.1 + 0.2 != 0.3 in binary floating point, and a cent of
 drift is enough to flip an affordability decision.
 
-Two formatters, deliberately different:
+Three formatters, deliberately different, each matching the labeled samples:
 
-  fmt_plain    -> for CSV output. Minimal representation, trailing zeros
-                  stripped, matching the labeled samples: 25256, 620.4, 603.3
+  fmt_plain    -> amount_safe_to_pay. Minimal representation, trailing zeros
+                  stripped: 25256, 620.4, 603.3
+  fmt_amount   -> amounts inside payment_plan and reduce_to changes. Whole
+                  numbers stay whole, anything else carries exactly two
+                  decimals: 25256, 620.40, 23.50
   fmt_currency -> for explanations. Thousands separators and the ISO code, with
                   two decimals whenever there is a fractional part: ZAR 25,256,
                   EUR 620.40
@@ -47,6 +50,14 @@ def fmt_plain(value: Decimal) -> str:
     if v == v.to_integral_value():
         return format(v.to_integral_value(), "f")
     return format(v.normalize(), "f")
+
+
+def fmt_amount(value: Decimal) -> str:
+    """Plan and spending-change amounts: 25256.00 -> '25256', 620.4 -> '620.40'."""
+    v = q(Decimal(value))
+    if v == v.to_integral_value():
+        return format(v.to_integral_value(), "f")
+    return format(v, "f")
 
 
 def fmt_currency(code: str, value: Decimal) -> str:

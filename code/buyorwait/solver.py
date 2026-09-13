@@ -17,7 +17,7 @@ from decimal import ROUND_DOWN, Decimal
 
 from .changes import Change, apply as apply_changes, combinations
 from .forecast import Curve
-from .money import CENTS, fmt_plain
+from .money import CENTS, fmt_amount
 from .ranker import NO_OPTION, Candidate
 from .simulate import is_safe, trough
 from .types import PaymentOption, Profile, Request
@@ -126,7 +126,7 @@ def enumerate_candidates(request: Request, profile: Profile, curve: Curve,
         if "full_payment" in accepted:
             add("full_payment",
                 [(request.request_date, request.requested_amount)],
-                [fmt_plain(request.requested_amount)],
+                [fmt_amount(request.requested_amount)],
                 request.requested_amount, changes, None, NO_OPTION, plan_status)
 
         # 2. Each supplied payment option.
@@ -152,7 +152,7 @@ def enumerate_candidates(request: Request, profile: Profile, curve: Curve,
 
             payments = option_payments(option)
             add(option.payment_method, payments,
-                [option.payment_amount_text] * len(payments),
+                [fmt_amount(option.payment_amount)] * len(payments),
                 option.total_payable_amount, changes,
                 option.payment_option_id, option.sort_key, status)
 
@@ -165,7 +165,7 @@ def enumerate_candidates(request: Request, profile: Profile, curve: Curve,
             remainder = request.requested_amount - safe
             add("partial_payment",
                 [(request.request_date, safe), (earliest, remainder)],
-                [fmt_plain(safe), fmt_plain(remainder)],
+                [fmt_amount(safe), fmt_amount(remainder)],
                 request.requested_amount, changes, None, NO_OPTION,
                 "affordable_with_plan")
 
@@ -173,7 +173,7 @@ def enumerate_candidates(request: Request, profile: Profile, curve: Curve,
         if (not changes and "full_payment" in accepted
                 and earliest is not None and earliest > request.request_date):
             add("wait", [(earliest, request.requested_amount)],
-                [fmt_plain(request.requested_amount)],
+                [fmt_amount(request.requested_amount)],
                 request.requested_amount, changes, None, NO_OPTION,
                 "affordable_later")
 

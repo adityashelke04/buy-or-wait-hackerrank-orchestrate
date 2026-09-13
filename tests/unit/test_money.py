@@ -44,3 +44,14 @@ def test_fmt_currency_uses_thousands_separators():
 def test_fmt_currency_keeps_two_decimals_for_sub_unit_values():
     assert fmt_currency("EUR", Decimal("620.40")) == "EUR 620.40"
     assert fmt_currency("USD", Decimal("23.5")) == "USD 23.50"
+
+
+def test_fmt_amount_writes_plan_amounts_the_way_the_labeled_samples_do():
+    """Samples write 620.40 and reduce_to ...:23.50, but 25256 and 68432."""
+    from buyorwait.money import fmt_amount
+    assert fmt_amount(Decimal("620.4")) == "620.40"
+    assert fmt_amount(Decimal("23.5")) == "23.50"
+    assert fmt_amount(Decimal("15952906.67")) == "15952906.67"
+    assert fmt_amount(Decimal("25256")) == "25256"
+    assert fmt_amount(Decimal("68432.00")) == "68432"
+    assert fmt_amount(Decimal("0")) == "0"

@@ -1,5 +1,7 @@
 # Buy or Wait? — Design Specification
 
+> **Historical note (added at submission).** This is the design as written before the build. Two choices changed during implementation, and the code, not this document, is authoritative: the local Ollama backend was dropped in favour of a model-free rule parser, and Tesseract was replaced by RapidOCR (PP-OCRv6) for reading images. Machine-specific paths, local endpoints and account names have been replaced with placeholders. See `README.md` for the system as shipped.
+
 **Date:** 2026-09-12
 **Challenge:** HackerRank Orchestrate September 2026 — Buy or Wait?
 **Deadline:** 2026-09-13T18:00:00+05:30
@@ -333,10 +335,10 @@ If measured throughput misses this budget, the fallback ladder is
 requiring that accuracy on the message fixture set does not regress.
 
 **Installation constraint (user requirement): Ollama installs to the D: drive only.**
-- Application: `OllamaSetup.exe /DIR="D:\ollama"`
-- Models: `OLLAMA_MODELS=D:\ollama\models` (set before first pull)
-- Nothing is written to `C:\Users\<user>\.ollama`. Verified in Sprint 3 by asserting the
-  model blobs exist under `D:\ollama\models` and that `C:` free space is unchanged.
+- Application: `OllamaSetup.exe /DIR="<ollama-dir>"`
+- Models: `OLLAMA_MODELS=<ollama-dir>\models` (set before first pull)
+- Nothing is written to `<user-profile>/.ollama`. Verified in Sprint 3 by asserting the
+  model blobs exist under `<ollama-dir>\models` and that `C:` free space is unchanged.
 
 ### 4.3 Amendment schema
 
@@ -493,7 +495,7 @@ Per-model and overall totals when more than one model is used. No keys, no crede
 ## 6.2 Delivery, repository and packaging
 
 **Public GitHub repository.** The project is published as a public repo under the user's
-account (`gh` is installed and authenticated as `adityashelke04`). One note, stated once and
+account (`gh` is installed and authenticated as `<github-user>`). One note, stated once and
 then not repeated: the challenge is solo, and a public repo during a live contest is visible
 to other participants. The user has asked for public; that is their call and it is
 implemented as asked.
@@ -552,7 +554,7 @@ recorded score.
 | 0 | Harness | Public GitHub repo created and pushed, secret-safe `.gitignore` in place, repo scaffolding, `evaluation/score.py` runs on the 25 samples, L1 contract tests exist and **fail** |
 | 1 | MVP | End-to-end with `rule` backend, zero model calls. 250 valid rows. Baseline score recorded. **A submittable artifact exists from here on and never stops existing.** |
 | 2 | Calibration | Recurrence statistic and drawdown convention tuned against the samples; `amount_safe_to_pay` exact-match climbing; ratchet raised |
-| 3 | Evidence | Ollama installed to `D:\ollama`, models pulled, extractor green on the message fixture set, VLM and OCR agree on all 5 sample images, ratchet raised |
+| 3 | Evidence | Ollama installed to `<ollama-dir>`, models pulled, extractor green on the message fixture set, VLM and OCR agree on all 5 sample images, ratchet raised |
 | 4 | Planner | Full candidate enumeration, spending changes, six-level ranking, ratchet raised |
 | 5 | Packaging | Explanation templates, validator hardening, `usage_report.md`, README, `code.zip` |
 | 6 | Inspector | Single-file HTML decision inspector: 90-day curve, evidence used, every candidate and why it lost |

@@ -172,3 +172,27 @@ def test_apply_raises_the_trough_because_money_is_saved():
     change = Change("stop", "event_streaming", s, None, Decimal("47"))
     out = apply(c, [change], date(2024, 3, 1), date(2024, 5, 29))
     assert trough(out) > trough(c)
+
+
+def test_stopping_one_series_leaves_an_identical_other_expense_in_place():
+    """Two different 47.00 bills on the 10th. Stopping one must remove ONE flow;
+    removing both would overstate the saving and could pass an unsafe plan."""
+    music = series("streaming", "Music", "stoppable", event_id="event_music")
+    gym = series("fitness", "Gym", "fixed", event_id="event_gym")
+    day = date(2024, 3, 10)
+    curve = Curve(date(2024, 3, 1), date(2024, 3, 31), Decimal("1000"),
+                  ((day, Decimal("-47")), (day, Decimal("-47"))))
+    stop = Change("stop", "event_music", music, None, Decimal("47"))
+    out = apply(curve, [stop], date(2024, 3, 1), date(2024, 3, 31))
+    assert out.flows == ((day, Decimal("-47")),)
+    assert gym.template_event_id == "event_gym"
+
+
+def test_reducing_one_series_rewrites_only_one_of_two_identical_flows():
+    stream = series("streaming", "Video", "reducible", minimum="20", event_id="event_video")
+    day = date(2024, 3, 10)
+    curve = Curve(date(2024, 3, 1), date(2024, 3, 31), Decimal("1000"),
+                  ((day, Decimal("-47")), (day, Decimal("-47"))))
+    cut = Change("reduce_to", "event_video", stream, Decimal("20"), Decimal("27"))
+    out = apply(curve, [cut], date(2024, 3, 1), date(2024, 3, 31))
+    assert sorted(a for _, a in out.flows) == [Decimal("-47"), Decimal("-20")]

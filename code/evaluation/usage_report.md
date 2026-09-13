@@ -3,8 +3,8 @@
 Covers the final full-dataset run that produced `output.csv`.
 
 - Requests processed: **250**
-- Wall-clock duration: **23.7s**
-- Cache hits / misses: **0 / 209**
+- Wall-clock duration: **22.6s**
+- Response cache: **not used** (local components re-run on every request)
 
 ## Per model
 

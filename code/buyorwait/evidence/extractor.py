@@ -86,6 +86,10 @@ class Extractor:
     # ------------------------------------------------------------- calling ---
 
     def _ask(self, key_parts: tuple, call):
+        # A deterministic local provider is simply re-run. Caching it would only
+        # risk serving answers from an older version of its own code.
+        if not getattr(self.provider, "cacheable", True):
+            return call()
         key = Cache.key(self.provider.name, *key_parts)
         if self.cache.has(key):
             USAGE.cache_hits += 1

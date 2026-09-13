@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 
+from .money import fmt_amount
 from .types import Dataset, Decision
 
 STATUSES = {"affordable_now", "affordable_with_plan", "affordable_later",
@@ -32,7 +33,9 @@ def _installment_plans(ds: Dataset, request_id: str) -> set[str]:
         freq = o.payment_frequency_days or 0
         dates = [o.first_payment_date + timedelta(days=freq * i)
                  for i in range(o.number_of_payments)]
-        plans.add("|".join(f"{d.isoformat()}:{o.payment_amount_text}" for d in dates))
+        # The option's own text, or the same amounts in the plan's number format.
+        for text in {o.payment_amount_text, fmt_amount(o.payment_amount)}:
+            plans.add("|".join(f"{d.isoformat()}:{text}" for d in dates))
     return plans
 
 
@@ -70,6 +73,20 @@ def check_all(decisions: list[Decision], ds: Dataset) -> list[str]:
             continue
         if not (0 <= safe <= req.requested_amount):
             problems.append(f"{rid}: safe {safe} outside [0, {req.requested_amount}]")
+        if "e" in d.amount_safe_to_pay.lower() or safe != safe.quantize(Decimal("0.01")):
+            problems.append(f"{rid}: amount_safe_to_pay {d.amount_safe_to_pay!r} is not plain money")
+
+        earliest: date | None = None
+        if d.earliest_date_for_full_payment:
+            try:
+                earliest = date.fromisoformat(d.earliest_date_for_full_payment)
+            except ValueError:
+                problems.append(f"{rid}: earliest date is not YYYY-MM-DD")
+        if earliest is not None and earliest < req.request_date:
+            problems.append(f"{rid}: earliest date precedes the request date")
+        if d.affordability_status == "affordable_later":
+            if earliest is None or earliest <= req.request_date:
+                problems.append(f"{rid}: affordable_later needs a future earliest date")
 
         if d.affordability_status == "affordable_now":
             if d.earliest_date_for_full_payment != req.request_date.isoformat():
@@ -91,6 +108,28 @@ def check_all(decisions: list[Decision], ds: Dataset) -> list[str]:
                     problems.append(f"{rid}: malformed plan entry {part!r}")
             if dates != sorted(dates):
                 problems.append(f"{rid}: plan is not chronological")
+            for part in d.payment_plan.split("|"):
+                amount = part.partition(":")[2]
+                try:
+                    if Decimal(amount) <= 0 or "e" in amount.lower():
+                        problems.append(f"{rid}: plan amount {amount!r} is not a positive amount")
+                except InvalidOperation:
+                    pass                                   # reported above
+        elif d.recommended_payment_method != "not_recommended":
+            problems.append(f"{rid}: {d.recommended_payment_method} needs a payment plan")
+
+        if d.recommended_payment_method in ("wait", "full_payment") and d.payment_plan != "none":
+            if "|" in d.payment_plan:
+                problems.append(f"{rid}: {d.recommended_payment_method} must be one payment")
+        if d.recommended_payment_method == "wait" and d.payment_plan != "none":
+            day, _, amount = d.payment_plan.partition(":")
+            if day != d.earliest_date_for_full_payment:
+                problems.append(f"{rid}: wait must pay on the earliest safe date")
+            try:
+                if Decimal(amount) != req.requested_amount:
+                    problems.append(f"{rid}: wait must pay the full requested amount")
+            except InvalidOperation:
+                pass
 
         if d.recommended_payment_method == "partial_payment":
             if d.affordability_status != "affordable_with_plan":

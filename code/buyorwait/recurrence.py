@@ -180,37 +180,33 @@ class Series:
                 year, month = year + 1, 1
         return sorted(out)
 
+    def _occurrences_from_last(self, start: date, until: date) -> list[date]:
+        """Dates in [start, until] that fall after the last settled occurrence.
 
-def _occurrences_from_last(self: "Series", start: date, until: date) -> list[date]:
-    """Dates in [start, until] that fall after the last settled occurrence.
-
-    Projecting from last_seen does two jobs at once: a bill due ON the request
-    date that has not yet settled is included, because it falls after last_seen;
-    one that has already settled is not, because it IS last_seen.
-    """
-    out: list[date] = []
-    if self.interval_days:
-        step = timedelta(days=self.interval_days)
-        d = self.last_seen + step
-        while d <= until:
-            if d >= start:
+        Projecting from last_seen does two jobs at once: a bill due ON the request
+        date that has not yet settled is included, because it falls after last_seen;
+        one that has already settled is not, because it IS last_seen.
+        """
+        out: list[date] = []
+        if self.interval_days:
+            step = timedelta(days=self.interval_days)
+            d = self.last_seen + step
+            while d <= until:
+                if d >= start:
+                    out.append(d)
+                d += step
+            return out
+        year, month = self.last_seen.year, self.last_seen.month
+        for _ in range(40):
+            d = clamp_day(year, month, self.anchor)
+            if d > until:
+                break
+            if d > self.last_seen and d >= start:
                 out.append(d)
-            d += step
+            month += 1
+            if month == 13:
+                year, month = year + 1, 1
         return out
-    year, month = self.last_seen.year, self.last_seen.month
-    for _ in range(40):
-        d = clamp_day(year, month, self.anchor)
-        if d > until:
-            break
-        if d > self.last_seen and d >= start:
-            out.append(d)
-        month += 1
-        if month == 13:
-            year, month = year + 1, 1
-    return out
-
-
-Series._occurrences_from_last = _occurrences_from_last
 
 
 def _family(event: Event) -> tuple[str, str]:
@@ -258,7 +254,7 @@ def detect(events: list[Event], profile: Profile, rates: RateTable,
         by_description[_family(e)].append(e)
 
     series = _series_from(by_description, profile, rates, estimator,
-                          min_observations, allow_any_cadence)
+                          min_observations, allow_any_cadence, window)
 
     covered = {s.category for s in series}
     by_category: dict[tuple[str, str], list[Event]] = defaultdict(list)
@@ -267,7 +263,7 @@ def detect(events: list[Event], profile: Profile, rates: RateTable,
             by_category[(e.category, "")].append(e)
 
     series.extend(_series_from(by_category, profile, rates, estimator,
-                               min_observations, allow_any_cadence))
+                               min_observations, allow_any_cadence, window))
 
     # Pass 3: recover categories the calendar bands reject. The dataset also
     # schedules spending every 10 or 14 days; such a category is neither weekly
@@ -276,7 +272,7 @@ def detect(events: list[Event], profile: Profile, rates: RateTable,
     # the calendar model already detects is touched.
     series.extend(_recover_interval_categories(
         usable, {s.category for s in series}, profile, rates, estimator,
-        min_observations))
+        min_observations, window))
 
     if _income_terminated(events, as_of):
         series = [s for s in series if s.direction != "credit"]
@@ -306,7 +302,8 @@ def _consistent_interval(gaps: list[int]) -> int | None:
 
 def _recover_interval_categories(usable: list[Event], covered: set[str],
                                  profile: Profile, rates: RateTable,
-                                 estimator: str, min_observations: int) -> list[Series]:
+                                 estimator: str, min_observations: int,
+                                 window: int = RECENT_WINDOW) -> list[Series]:
     estimate = ESTIMATORS[estimator]
     # Only ESSENTIAL spending is recovered - "forecast essential variable
     # spending conservatively". The user's protected categories are the
@@ -330,7 +327,7 @@ def _recover_interval_categories(usable: list[Event], covered: set[str],
         step = _consistent_interval(gaps)
         if step is None:
             continue
-        recent = members[-RECENT_WINDOW:]
+        recent = members[-window:]
         amounts = [rates.convert(e.amount, e.currency, profile.home_currency,
                                  e.settlement_date) for e in recent]
         latest = members[-1]
@@ -442,7 +439,8 @@ def _confirmed_salary_series(events: list[Event], profile: Profile,
 
 def _series_from(groups: dict[tuple[str, str], list[Event]], profile: Profile,
                  rates: RateTable, estimator: str, min_observations: int,
-                 allow_any_cadence: bool) -> list[Series]:
+                 allow_any_cadence: bool,
+                 window: int = RECENT_WINDOW) -> list[Series]:
     estimate = ESTIMATORS[estimator]
     series: list[Series] = []
     for (category, _label), members in sorted(groups.items()):
@@ -466,7 +464,7 @@ def _series_from(groups: dict[tuple[str, str], list[Event]], profile: Profile,
         else:
             continue                    # irregular: not a dependable commitment
 
-        recent = members[-RECENT_WINDOW:]
+        recent = members[-window:]
         home_amounts = [
             rates.convert(e.amount, e.currency, profile.home_currency,
                           e.settlement_date)

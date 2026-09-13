@@ -6,72 +6,73 @@ For each of the 250 requests in `dataset/requests.csv`, the agent decides whethe
 should pay in full, pay partially, use an installment offer, wait, or not proceed — and
 writes a safe, explained recommendation to `output.csv`.
 
-**Result on the 25 labeled samples: 74.3% average field accuracy**, measured by
-`evaluation/score.py`. Full run: 250 rows in about 27 seconds, fully local, $0.
+**Local result: 74.3% average field accuracy on the 25 labeled sample requests**
+(`python code/evaluation/main.py`). Full run: 250 rows in about 25–30 seconds on a laptop
+CPU, fully local, no API key, $0. The official score comes from hidden answers and will
+differ; see [Limitations](#known-limitations).
 
 ---
 
 ## Quick start
+
+Tested on Python 3.13 (Windows). No GPU, network access or API key is needed; the OCR
+models ship inside the `rapidocr` wheel.
 
 ```bash
 pip install -r requirements.txt
 python code/main.py
 ```
 
-That writes `output.csv` to the repository root and `evaluation/usage_report.md`.
-No API key, no network and no GPU are needed.
+This writes `output.csv` to the repository root and the token/cost report to
+`evaluation/usage_report.md` (mirrored to `code/evaluation/usage_report.md`).
 
-Run the tests:
-
-```bash
-python -m pytest              # 294 tests, including OCR on the real images
-python -m pytest -m "not slow"  # skips the image tests for a faster loop
-```
-
-Score against the labeled samples:
-
-```bash
-python code/main.py --requests-file sample_requests.csv --out output_samples.csv
-python evaluation/score.py output_samples.csv
-```
-
-Build the submission archive (fails if it approaches the 50 MB limit):
-
-```bash
-python scripts/package.py
-```
+| Task | Command |
+|---|---|
+| Produce `output.csv` | `python code/main.py` |
+| Score against the 25 labeled samples | `python code/evaluation/main.py` |
+| Run every test (331) | `python -m pytest` |
+| Fast loop, skipping the OCR and full-run tests | `python -m pytest -m "not slow"` |
+| Grid-search forecasting settings | `python evaluation/calibrate.py` |
+| Build `code.zip` | `python scripts/package.py` |
 
 ### Options
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--backend` | `rule` | Evidence reader: `rule` (local), `cloud` (Google AI Studio), `none` |
-| `--estimator` | `p75` | How conservatively to forecast variable spending |
-| `--requests-file` | `requests.csv` | Any file with the requests schema |
+| `--backend` | `rule` | Evidence reader: `rule` (local), `cloud` (OpenAI-compatible API), `none` |
+| `--estimator` | `p75` | How conservatively to forecast variable spending: `last`, `mean`, `median`, `p75`, `max`, `max3` |
+| `--requests-file` | `requests.csv` | Any file with the requests schema, inside `--dataset` |
+| `--dataset` | `dataset/` | Folder holding the CSVs and `media/images/` |
 | `--out` | `output.csv` | Where to write predictions |
+
+Invalid values are rejected before any work starts.
 
 ### Optional cloud backend
 
-Copy `.env.example` to `.env`, set `LLM_API_KEY` to a free Google AI Studio key, then run
-`python code/main.py --backend cloud`. Keys are read from the environment only — never
-written to disk, logged, or placed in a prompt. `.env` is gitignored.
+The submitted run does not use it. To try it, copy `.env.example` to `.env` and set
+`LLM_API_KEY` (a Google AI Studio key by default; `LLM_BASE_URL` and `LLM_CLOUD_MODEL`
+switch to any OpenAI-compatible provider), then run `python code/main.py --backend cloud`.
+
+`code/main.py` reads `.env` itself with the standard library; a variable already set in the
+shell always wins. The key is never printed, logged, cached or placed in a prompt. `.env` is
+gitignored and is refused by the packager.
 
 ---
 
 ## Approach
 
-### The core decision: numbers are computed, not generated
+### Numbers are computed, not generated
 
-Reverse-engineering the 25 labeled samples showed that `amount_safe_to_pay` follows exact
-arithmetic:
+Reverse-engineering the 25 labeled samples showed that `amount_safe_to_pay` has this
+structure:
 
 ```
 amount_safe_to_pay = clip(balance − minimum_balance − worst 90-day drawdown, 0, requested)
 ```
 
-A language model cannot reliably produce a figure like `17229139.2`. So **every number in
-`output.csv` comes from a deterministic cash-flow simulator**, and models are confined to
-reading untrusted text and images.
+A language model cannot reliably produce a figure like `17229139.2`, so **every number in
+`output.csv` comes from a deterministic cash-flow simulator**. Messages and images are read
+only to adjust the facts the simulator starts from.
 
 ### Pipeline
 
@@ -91,8 +92,6 @@ CSVs + PNGs
 
 ### The six traps the ledger resolves
 
-The event log deliberately represents the same money more than once:
-
 | Trap | Handling |
 |---|---|
 | Cancelled authorization + the settled charge | Count once |
@@ -104,20 +103,35 @@ The event log deliberately represents the same money more than once:
 
 ### How `amount_safe_to_pay` is computed
 
-Paying X today lowers every later balance by exactly X, so the lowest point of the
-forecast is a straight line in X. The largest safe payment is therefore one subtraction:
-`lowest balance − minimum`. A slow binary-search version ships alongside it, and a test
-generates 200 random balance curves asserting both always agree.
+Paying X today lowers every later balance by exactly X, so the lowest point of the forecast
+is a straight line in X. The largest safe payment is therefore one subtraction:
+`lowest balance − minimum`, rounded down to the cent. A slow binary-search version ships
+alongside it, and a test generates 200 random balance curves asserting both always agree.
+
+### Choosing the plan
+
+Every eligible plan — full payment today, each supplied option, a two-step partial payment,
+waiting for the first safe date, each with zero to three permitted spending changes — is
+simulated over the 90-day window. Unsafe or ineligible plans are discarded, and the rest are
+ranked by the problem statement's six rules. A spending change only ever touches a
+non-protected, flexible expense in a category the user allows, and `reduce_to` always uses
+the event's own `minimum_allowed_amount`.
+
+### Output format
+
+Amounts follow the labeled samples exactly: `amount_safe_to_pay` is minimal (`603.3`),
+while amounts inside `payment_plan` and `reduce_to` are whole numbers or carry two decimals
+(`620.40`, `reduce_to:event_1816:23.50`), even when the source CSV wrote `620.4`.
 
 ### Reading the images
 
-All 16 blank amounts are resolved with **RapidOCR** (PP-OCRv6 via ONNXRuntime —
-Apache-2.0, pip-only, CPU). Reading the page is the easy part; choosing the right number
-is not. A payslip carries a tax reference, an account number and percentage rates beside
-the figure that matters, so size is no guide. Selection is driven by the **label** next to
-each figure, chosen from the event's own wording — "net salary" selects Net Pay
-(4,365,000) rather than Total Earnings (4,780,800); "outstanding rent balance" selects
-Balance Due rather than the receipt total.
+All 16 blank amounts are resolved with **RapidOCR** (PP-OCRv6 via ONNXRuntime — Apache-2.0,
+pip-only, CPU). Reading the page is the easy part; choosing the right number is not. A
+payslip carries a tax reference, an account number and percentage rates beside the figure
+that matters, so size is no guide. Selection is driven by the **label** next to each figure,
+chosen from the event's own wording — "net salary" selects Net Pay (4,365,000) rather than
+Total Earnings (4,780,800); "outstanding rent balance" selects Balance Due rather than the
+receipt total.
 
 ### Untrusted input
 
@@ -129,23 +143,41 @@ assert the decision is unchanged.
 
 ---
 
-## How it was built
+## Quality gates
 
-Test-driven throughout, measured at every step.
+Test-driven throughout, measured at every step. **331 tests** in four layers:
 
-- **Four test layers.** Contract tests assert every rule in the problem statement on all
-  250 output rows. Unit tests cover each module. A golden **ratchet** fails the build if the
-  sample score ever drops. Smoke tests assert two full runs are byte-identical.
-- **Measure, don't guess.** `evaluation/calibrate.py` grid-searches forecasting choices
-  against the labeled samples. Two ideas that looked right were rejected because they scored
-  lower: stopping salary projection at the confirmed row (40.0%), and a fixed-interval
-  cadence model (63.4%).
-- **Fail closed.** On its first run the contract gate refused to write anything: rounding had
-  broken the rule that a two-step partial payment must sum to the requested amount.
+- **Contract** — every rule in the problem statement, asserted on all 250 rows produced by the
+  shipped configuration (OCR included). The same rules run as a gate inside the pipeline, which
+  refuses to write an invalid `output.csv`. On its first run it caught a rounding bug that broke
+  the rule that a two-step partial payment must sum to the requested amount.
+- **Unit** — each module, including the contract gate itself (each check must reject a
+  deliberately malformed row).
+- **Golden ratchet** — fails the build if the sample score ever drops.
+- **Smoke** — two full runs are byte-identical; the committed `output.csv` is exactly what the
+  current code produces; the CLI rejects bad input; `code.zip` builds under the size limit
+  and passes the sensitive-content scan.
 
-### Findings that moved the score
+### No hardcoded answers
 
-Every row was measured on the labeled samples before being kept.
+Enforced by tests, not by intention:
+
+- the solution source is scanned for evaluation request ids and event ids, and fails if any appear
+- the labeled sample file is never named anywhere in the solution; only the scorer reads it
+- only the documented dataset files are opened
+
+### Submission hygiene
+
+`scripts/package.py` refuses to build `code.zip` if any text file would ship an API key or
+token, a private key, an IP address, an email address, an absolute path from a developer
+machine, or a filled-in secret. `.env`, `log.txt`, caches, `__pycache__` and `.git` are
+never packaged.
+
+---
+
+## How the score moved
+
+Every change was measured on the labeled samples before being kept.
 
 | Change | Score |
 |---|---|
@@ -161,10 +193,10 @@ Every row was measured on the labeled samples before being kept.
 | Field | Accuracy |
 |---|---|
 | recommended_payment_method | 92% |
+| spending_changes_needed | 88% |
 | affordability_status | 84% |
 | payment_plan | 84% |
 | earliest_date_for_full_payment | 80% |
-| spending_changes_needed | 88% |
 | decision_explanation | 72% |
 | amount_safe_to_pay | 20% |
 
@@ -173,29 +205,22 @@ Every row was measured on the labeled samples before being kept.
 | Idea | Result | Why it was plausible |
 |---|---|---|
 | Stop projecting salary beyond the confirmed row | 40.0% | "Do not invent unsupported future income" |
-| Fixed-interval cadence for every category | 64.0% | The data really does use exact 7/10/14-day steps |
+| Fixed-interval cadence for every category | 63.4% when first tried, 64.0% re-measured later | The data really does use exact 7/10/14-day steps |
 | Recover 10/14-day spending in all categories | 60.0% | More complete forecast — but it swept in discretionary spending |
 | Drop discretionary series the calendar model already finds | 71.4% | Extending the "essential only" finding |
 
-### Known limitation
+## Known limitations
 
-`amount_safe_to_pay` is scored to within 0.5%, and remains the weakest field. Every
-forecast component is now identified correctly; what differs is the exact estimated
-amount. The ground-truth reserves are round numbers (157.00, 452.00, 568.00) while
-history is noisy, which suggests the generator forecasts from hidden base amounts. The
-residual bias is visible and consistent — the forecast under-reserves slightly, so it says
-*affordable now* a little more often than the reference — and was deliberately not tuned
-further against 25 rows, to avoid overfitting the 250 evaluation requests.
-
----
-
-## No hardcoded answers
-
-Enforced by tests, not by intention:
-
-- the source is scanned for evaluation request ids and event ids, and fails if any appear
-- `sample_requests.csv` is never named anywhere in `code/`; only the scorer reads it
-- only the documented dataset files are opened
+- **`amount_safe_to_pay` is the weakest field (20% within 0.5%).** Every forecast component is
+  identified, but the estimated amounts differ. The reference reserves are round numbers
+  (157.00, 452.00, 568.00) while history is noisy, which suggests the generator forecasts from
+  hidden base amounts. The forecast under-reserves slightly, so it says *affordable now* a
+  little more often than the reference. This was deliberately not tuned further against 25
+  rows, to avoid overfitting the 250 evaluation requests.
+- **74.3% is optimistic.** Settings were chosen on the same 25 samples they are scored on.
+- The rule-based message parser recognises confirmed salary changes, date changes and
+  percentage increases in English and Indonesian; other message types leave the ledger
+  unchanged, which is the conservative default.
 
 ---
 
@@ -203,7 +228,8 @@ Enforced by tests, not by intention:
 
 ```
 code/
-  main.py                   entry point
+  main.py                   entry point: python code/main.py
+  evaluation/main.py        one-command local score
   buyorwait/
     types.py money.py fx.py io_loaders.py io_writer.py
     ledger.py recurrence.py forecast.py simulate.py solver.py
@@ -212,10 +238,10 @@ code/
 evaluation/
   score.py                  per-field accuracy against the labeled samples
   calibrate.py              grid search over forecasting choices
-  usage_report.md           generated by the final run
+  usage_report.md           token and cost report, generated by the final run
 tests/  unit/ contract/ golden/ smoke/
-scripts/package.py          builds code.zip
-docs/superpowers/           design spec and implementation plan
+scripts/package.py          builds code.zip and scans it for sensitive content
+docs/superpowers/           design spec and implementation plan (historical)
 ```
 
 Token usage and cost for the final run: [`evaluation/usage_report.md`](evaluation/usage_report.md).
