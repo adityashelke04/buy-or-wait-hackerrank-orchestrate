@@ -52,6 +52,25 @@ ESTIMATORS: dict[str, Callable[[list[Decimal]], Decimal]] = {
 
 
 CADENCE_AGREEMENT = 0.6      # share of gaps that must sit inside the band
+OUTLIER_MULTIPLE = Decimal("3")   # above this multiple of the median = one-off
+
+
+def _without_one_offs(members: list[Event]) -> list[Event]:
+    """Drop one-off purchases from a recurring group before estimating.
+
+    'Distinguish recurring expenses from one-time purchases.' A bulk shop of
+    41,272 among weekly groceries of about 8,600 is a one-off; left in, it would
+    be projected as the weekly grocery bill. Anything above OUTLIER_MULTIPLE of
+    the group median is treated as a one-time event.
+    """
+    if len(members) < 3:
+        return members
+    amounts = sorted(e.amount for e in members)
+    median = amounts[len(amounts) // 2]
+    if median <= 0:
+        return members
+    kept = [e for e in members if e.amount <= median * OUTLIER_MULTIPLE]
+    return kept if len(kept) >= 2 else members
 
 
 def _fits(gaps: list[int], band: tuple[int, int]) -> bool:
@@ -178,6 +197,7 @@ def _series_from(groups: dict[tuple[str, str], list[Event]], profile: Profile,
     estimate = ESTIMATORS[estimator]
     series: list[Series] = []
     for (category, _label), members in sorted(groups.items()):
+        members = _without_one_offs(members)
         members.sort(key=lambda e: (e.settlement_date, e.event_id))
         if len(members) < min_observations:
             continue

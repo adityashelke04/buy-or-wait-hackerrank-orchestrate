@@ -213,3 +213,33 @@ def test_income_projection_can_be_disabled():
                      project_income=False)
     assert {s.category for s in without} == {"rent"}
     assert all(s.direction == "debit" for s in without)
+
+
+def test_a_one_off_bulk_purchase_does_not_inflate_the_recurring_estimate():
+    """'Distinguish recurring expenses from one-time purchases.' A bulk shop of
+    41,272 among weekly groceries of about 8,600 is a one-off; letting it into
+    the estimate would project a 41,272 grocery bill every week."""
+    days = [date(2026, 1, 2), date(2026, 1, 9), date(2026, 1, 16), date(2026, 1, 23),
+            date(2026, 1, 30), date(2026, 2, 6)]
+    amounts = ["8124.44", "11433.33", "7093.83", "8638.54", "8581.99", "11342.57"]
+    # Rotating descriptions, as in the real data, so the category-level pass is
+    # the one that forms the series - and the one the bulk shop can leak into.
+    names = ["Supermarket basket", "Grocery delivery", "Bulk pantry shop",
+             "Fresh food shop", "Weekly produce market", "Neighbourhood grocer"]
+    events = [ev(f"event_{i}", d, a, category="groceries", description=n)
+              for i, (d, a, n) in enumerate(zip(days, amounts, names))]
+    events.append(ev("event_bulk", date(2026, 2, 6), "41272", category="groceries",
+                     description="Bulk groceries and pantry purchase"))
+
+    s = detect(events, prof(), EMPTY_RATES, as_of=date(2026, 2, 10), estimator="max")
+    groceries = [x for x in s if x.category == "groceries"]
+    assert groceries
+    assert all(x.amount < Decimal("20000") for x in groceries), \
+        f"one-off leaked into the estimate: {[str(x.amount) for x in groceries]}"
+
+
+def test_outlier_filter_leaves_a_steady_series_untouched():
+    days = [date(2024, 1, 1), date(2024, 2, 1), date(2024, 3, 1)]
+    events = [ev(f"event_{i}", d, "467.50") for i, d in enumerate(days)]
+    s = detect(events, prof(), EMPTY_RATES, as_of=date(2024, 3, 5), estimator="max")
+    assert s[0].amount == Decimal("467.50")
